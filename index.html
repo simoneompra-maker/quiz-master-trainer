@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Quiz Master Trainer</title>
+<meta name="description" content="Preparazione al corso Master Trainer della Scuola Italiana Nordic Walking">
+<meta name="theme-color" content="#1f5f4a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <button class="icon-btn" id="btnBack" aria-label="Indietro" hidden>←</button>
+  <h1 id="title">Quiz Master Trainer</h1>
+  <span class="net" id="net" title="Stato connessione"></span>
+</header>
+<main id="view" aria-live="polite"></main>
+<div class="toast" id="toast" role="status"></div>
+<dialog id="dlg"><form method="dialog" id="dlgForm"></form></dialog>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
