@@ -310,8 +310,10 @@ function flash(list, i, back) {
   const q = list[i];
   view.innerHTML = `<div class="progress"><span>Carta ${i + 1} di ${list.length}</span><span>${back ? "Risposta" : "Domanda"}</span></div>
   <div class="card flash" id="fc">${qHeader(q)}
-    ${back ? `<div class="face-label">Risposta</div><div class="question" style="color:var(--ok)">${esc(q.options[q.answer])}</div><div class="muted">${esc(q.explanation)}</div><div class="src">📖 ${esc(q.source)}</div>`
-           : `<div class="face-label">Domanda</div><div class="question">${esc(q.question)}</div><div class="small muted">Tocca la carta per girarla</div>`}
+    <div class="face-label">${back ? "Risposta" : "Domanda"}</div><div class="question">${esc(q.question)}</div>
+    <div class="opts">${q.options.map((o, j) => `<div class="opt${back && j === q.answer ? " right" : ""}" style="cursor:inherit${back && j !== q.answer ? ";opacity:.55" : ""}"><span class="k">${KEYS[j]}</span><span>${esc(o)}</span></div>`).join("")}</div>
+    ${back ? `<div class="explain"><div class="verdict">✅ Risposta giusta: ${KEYS[q.answer]}</div>${esc(q.explanation)}<div class="src">📖 ${esc(q.source)}</div></div>`
+           : `<div class="small muted" style="margin-top:12px">Tocca la carta per vedere la risposta</div>`}
   </div>
   <div class="grid2"><button class="btn secondary" id="pv" ${i ? "" : "disabled"}>← Precedente</button><button class="btn" id="nx">${i + 1 < list.length ? "Successiva →" : "Fine"}</button></div>
   <div class="row end"><button class="btn ghost" id="rep">⚠️ Segnala un errore</button></div>`;
