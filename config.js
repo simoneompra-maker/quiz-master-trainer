@@ -5,5 +5,5 @@ window.QUIZ_CONFIG = {
   examQuestions: 30,
   examMinutes: 30,
   passThreshold: 0.8,
-  appVersion: "1.0.1"
+  appVersion: "1.1.0"
 };

@@ -1,9 +1,17 @@
-/* Quiz Master Trainer SINW — PWA senza dipendenze. */
+/* Quiz Master Trainer — PWA senza dipendenze. */
 "use strict";
 const CFG = window.QUIZ_CONFIG;
+// Documenti su cui si basano le domande: aggiornare qui quando esce una nuova versione.
+const FONTI = [
+  ["Manuale tecnico 2025", "rev. giugno 2025"],
+  ["Eserciziario", "rev. ottobre 2023"],
+  ["Codice deontologico dei Tecnici", "aggiornato al 01/04/2022"],
+  ["Regolamento generale", "aggiornato al 15/04/2025"],
+  ["Statuto", "approvato il 13/12/2023"],
+];
 const TOPICS = {
-  storia: "Storia e nascita SINW", vantaggi: "Vantaggi", attrezzatura: "Attrezzatura", tecnica: "Tecnica base",
-  biomeccanica: "Biomeccanica e parametri SINW", andature: "Andature e coordinazione", sportive: "Tecniche sportive",
+  storia: "Storia e nascita", vantaggi: "Vantaggi", attrezzatura: "Attrezzatura", tecnica: "Tecnica base",
+  biomeccanica: "Biomeccanica e parametri tecnici", andature: "Andature e coordinazione", sportive: "Tecniche sportive",
   riscaldamento: "Riscaldamento e defaticamento", pianificazione: "Pianificazione allenamento", didattica: "Didattica",
   errori: "Correzione degli errori", eserciziario: "Eserciziario", gruppi_sicurezza: "Gruppi specifici e sicurezza",
   eventi: "Eventi e circuiti", codice: "Codice deontologico", regolamento: "Regolamento", statuto: "Statuto",
@@ -73,7 +81,7 @@ function login() {
   view.innerHTML = `
   <div class="card">
     <h2>Benvenuto 👋</h2>
-    <p class="muted">Preparazione al corso Master Trainer della Scuola Italiana Nordic Walking. Inserisci il tuo nome e il codice del corso.</p>
+    <p class="muted">Preparazione al corso Master Trainer. Inserisci il tuo nome e il codice del corso.</p>
     <form id="f">
       <label for="n">Nome</label><input id="n" type="text" autocomplete="name" required maxlength="60" value="${esc(S.user?.name || "")}">
       <label for="c">Codice corso</label><input id="c" type="password" autocomplete="off" required>
@@ -133,11 +141,13 @@ function home() {
     `<div class="row small"><span>${new Date(h.at).toLocaleDateString("it-IT")}</span><span class="spacer"></span><b class="${h.pct >= CFG.passThreshold * 100 ? "pass" : "fail"}">${h.ok}/${h.n} · ${h.pct}%</b></div>`).join("")}</div>` : ""}
   <div class="grid2" style="margin-top:12px">
     <button class="btn secondary" id="prop">✍️ Proponi una domanda</button>
-    <button class="btn secondary" id="adm">🔐 Area amministratore</button>
+    <button class="btn secondary" id="fonti">📚 Fonti</button>
   </div>
+  <button class="btn secondary block" id="adm" style="margin-top:10px">🔐 Area amministratore</button>
   <p class="small muted" style="text-align:center;margin-top:16px">v${CFG.appVersion} · <a href="#" id="logout" class="muted">Esci</a></p>`;
   view.querySelectorAll(".mode").forEach((b) => (b.onclick = () => ({ train: () => go(setup, "train"), exam: () => go(examIntro), review: () => go(startReview), flash: () => go(setup, "flash") }[b.dataset.m]())));
   $("#prop").onclick = () => go(proposeForm);
+  $("#fonti").onclick = () => go(fontiPage);
   $("#adm").onclick = () => go(adminLogin);
   $("#logout").onclick = (e) => { e.preventDefault(); if (confirm("Uscire? Le tue statistiche restano su questo dispositivo.")) { S.user = null; store.del("user"); login(); } };
   $("#sync").onclick = async () => {
@@ -152,6 +162,7 @@ function setup(mode) {
   const p = S.prefs; const avail = Object.keys(TOPICS).filter((k) => S.questions.some((q) => q.topic === k));
   const sel = new Set(p.topics.length ? p.topics.filter((t) => avail.includes(t)) : avail);
   const lv = new Set(p.levels);
+  let voice = mode === "train" && p.trainMode === "voice";
   view.innerHTML = `
   <div class="card">
     <h2>Argomenti</h2>
@@ -159,20 +170,27 @@ function setup(mode) {
     <div class="chips" id="tp">${avail.map((k) => `<button class="chip" data-k="${k}" aria-pressed="${sel.has(k)}">${esc(TOPICS[k])}</button>`).join("")}</div>
     <h3>Livello</h3>
     <div class="chips" id="lv">${[1, 2, 3].map((l) => `<button class="chip" data-l="${l}" aria-pressed="${lv.has(l)}">${LEVELS[l]}</button>`).join("")}</div>
-    <h3>Quante domande</h3>
-    <div class="chips" id="ct">${[10, 20, 40, 0].map((n) => `<button class="chip" data-n="${n}" aria-pressed="${p.count === n}">${n || "Tutte"}</button>`).join("")}</div>
+    ${mode === "train" ? `<h3>Come vuoi allenarti</h3>
+    <div class="grid2" id="tm">${[["quiz", "📝 Rispondi ai quiz"], ["voice", "🎙️ Spiega a voce"]].map(([k, v]) => `<button class="chip" data-tm="${k}" aria-pressed="${voice === (k === "voice")}">${v}</button>`).join("")}</div>` : ""}
+    <div id="ctBox"><h3>Quante domande</h3>
+    <div class="chips" id="ct">${[10, 20, 40, 0].map((n) => `<button class="chip" data-n="${n}" aria-pressed="${p.count === n}">${n || "Tutte"}</button>`).join("")}</div></div>
     <p class="small muted" id="avail"></p>
     <button class="btn block" id="go" style="margin-top:8px">Inizia</button>
   </div>`;
   const pool = () => S.questions.filter((q) => sel.has(q.topic) && lv.has(q.level));
-  const refresh = () => { $("#avail").textContent = `${pool().length} domande disponibili con questi filtri`; $("#go").disabled = !pool().length; };
+  const refresh = () => {
+    $("#ctBox").hidden = voice; $("#go").textContent = voice ? "Dammi un compito" : "Inizia";
+    $("#avail").textContent = `${pool().length} domande disponibili con questi filtri`; $("#go").disabled = !pool().length;
+  };
+  if (mode === "train") $("#tm").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; voice = b.dataset.tm === "voice"; $("#tm").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", c === b)); refresh(); };
   $("#tp").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; const k = b.dataset.k; sel.has(k) ? sel.delete(k) : sel.add(k); b.setAttribute("aria-pressed", sel.has(k)); refresh(); };
   $("#lv").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; const l = +b.dataset.l; lv.has(l) ? lv.delete(l) : lv.add(l); b.setAttribute("aria-pressed", lv.has(l)); refresh(); };
   $("#ct").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; p.count = +b.dataset.n; $("#ct").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", c === b)); };
   $("#all").onclick = () => { avail.forEach((k) => sel.add(k)); $("#tp").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", true)); refresh(); };
   $("#none").onclick = () => { sel.clear(); $("#tp").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", false)); refresh(); };
   $("#go").onclick = () => {
-    S.prefs = { topics: [...sel], levels: [...lv], count: p.count }; store.set("prefs", S.prefs);
+    S.prefs = { topics: [...sel], levels: [...lv], count: p.count, trainMode: mode === "train" ? (voice ? "voice" : "quiz") : p.trainMode }; store.set("prefs", S.prefs);
+    if (voice) return go(voiceTask, pool(), [...sel]);
     // privilegia le domande mai viste o sbagliate
     let list = shuffle(pool()).sort((a, b) => weight(b) - weight(a));
     if (p.count) list = list.slice(0, p.count);
@@ -182,6 +200,92 @@ function setup(mode) {
   refresh();
 }
 const weight = (q) => { const s = S.stats[q.id]; if (!s) return 2; if (s.open) return 3; return s.correct / s.seen < 1 ? 1 : 0; };
+
+/* ---------- spiega a voce ---------- */
+// I tre fondamentali dell'Eserciziario: le fonti delle domande citano "primo/secondo/terzo fondamentale".
+const FONDAMENTALI = [
+  { re: /primo fondamentale/i, tema: "la Preparazione (piede e dinamica del cammino)" },
+  { re: /secondo fondamentale/i, tema: "l'Inserimento del bastoncino (bastoncino e arti superiori)" },
+  { re: /terzo fondamentale/i, tema: "l'Utilizzo del bastoncino (carico, spinta, recupero)" },
+];
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
+// 6-10 punti chiave: prima i gruppi indicati in ordine, dentro ogni gruppo prima le domande verificate; niente doppioni.
+function keyPoints(groups, max = 8) {
+  const out = [], seen = new Set();
+  for (const g of groups) {
+    const sorted = shuffle(g).sort((a, b) => (b.status === "verificata") - (a.status === "verificata"));
+    for (const q of sorted) {
+      const k = (q.explanation || "").trim().toLowerCase();
+      if (!k || seen.has(k)) continue;
+      seen.add(k); out.push(q);
+      if (out.length >= max) return out;
+    }
+  }
+  return out;
+}
+function makeVoiceTask(pool, topics) {
+  const byTopic = (ts) => S.questions.filter((q) => ts.includes(q.topic));
+  const kinds = [];
+  const sit = pool.filter((q) => q.situational);
+  if (sit.length) kinds.push("sit");
+  const es = pool.filter((q) => q.topic === "eserciziario");
+  const fonds = FONDAMENTALI.filter((f) => es.some((q) => f.re.test(q.source)));
+  if (es.length) kinds.push("es");
+  const plain = [...new Set(pool.filter((q) => !q.situational && q.topic !== "eserciziario").map((q) => q.topic))];
+  if (plain.length) kinds.push("topic");
+  const kind = pick(kinds);
+  if (kind === "sit") {
+    const q = pick(sit), txt = q.question.trim();
+    return {
+      title: `Caso pratico: ${txt}${/[.?!]$/.test(txt) ? "" : "."} Rispondi spiegando come interverresti e perché.`,
+      points: keyPoints([[q], byTopic(["errori", "didattica", "eserciziario"])]),
+    };
+  }
+  if (kind === "es") {
+    const all = byTopic(["eserciziario"]);
+    if (fonds.length) {
+      const f = pick(fonds);
+      return { title: `Descrivi agli allievi un esercizio per: ${f.tema}, con obiettivo ed esecuzione.`, points: keyPoints([all.filter((q) => f.re.test(q.source)), all]) };
+    }
+    return { title: `Descrivi agli allievi un esercizio per: ${TOPICS.eserciziario}, con obiettivo ed esecuzione.`, points: keyPoints([all]) };
+  }
+  const t = pick(plain), own = byTopic([t]);
+  return { title: `Spiega agli allievi: ${TOPICS[t] || t}.`, points: keyPoints(own.length >= 6 ? [own] : [own, byTopic(topics)]) };
+}
+function voiceMessage(task) {
+  return `Sei un esaminatore esperto del corso Master Trainer di Nordic Walking.
+Ti spiegherò a voce, come davanti a un gruppo di allievi: ${task.title}
+Ascoltami senza interrompermi e non rivelarmi i punti chiave prima che io dica 'ho finito'.
+Poi dammi un feedback in quattro punti:
+1) Contenuto: cosa ho detto bene, cosa ho dimenticato, cosa è impreciso rispetto ai punti chiave. Considera solo i punti pertinenti al compito: non togliere punti per argomenti non richiesti.
+2) Chiarezza e didattica: ordine logico, esempi; se le immagini o gli esercizi che uso sono in linea con quelli indicati nei punti chiave, dimmelo; se ne esiste già uno ufficiale diverso, citalo.
+3) Linguaggio: elenca ogni intercalare con il numero di volte (es. quindi ×9, ehm ×5, diciamo ×4, cioè ×3, praticamente ×2), poi ripetizioni e frasi troppo lunghe.
+4) Un voto da 1 a 10 e un solo consiglio pratico per la prossima prova.
+Poi chiedimi se voglio riprovare.
+PUNTI CHIAVE:
+${task.points.map((q) => `- ${q.explanation.trim()} (fonte: ${q.source})`).join("\n")}`;
+}
+function voiceTask(pool, topics) {
+  setTitle("Spiega a voce", true); document.onkeydown = null;
+  const task = makeVoiceTask(pool, topics), msg = voiceMessage(task);
+  view.innerHTML = `<div class="card">
+    <div class="face-label">Il tuo compito</div>
+    <div class="task">${esc(task.title)}</div>
+    <div class="grid2"><button class="btn" id="cp">📋 Copia messaggio</button><button class="btn secondary" id="again">🔄 Altro compito</button></div>
+    <div id="fallback"></div>
+    <p class="small muted" style="margin-top:14px">Incolla il messaggio in Claude, Gemini o ChatGPT, avvia la modalità vocale e spiega. Quando hai finito di' 'ho finito'.</p>
+    <div class="row">${[["https://claude.ai/new", "Claude"], ["https://gemini.google.com/app", "Gemini"], ["https://chatgpt.com", "ChatGPT"]].map(([u, n]) => `<a class="btn ghost" href="${u}" target="_blank" rel="noopener">${n} ↗</a>`).join("")}</div>
+    <p class="small muted">${task.points.length} punti chiave inclusi nel messaggio (non mostrati qui, così non li leggi prima).</p>
+  </div>`;
+  const showFallback = () => {
+    $("#fallback").innerHTML = `<p class="small muted" style="margin-top:12px">Copia non riuscita: seleziona il testo qui sotto e copialo.</p><textarea id="msg" readonly rows="10">${esc(msg)}</textarea>`;
+    const ta = $("#msg"); ta.focus(); ta.select();
+  };
+  $("#cp").onclick = async () => {
+    try { await navigator.clipboard.writeText(msg); toast("Messaggio copiato ✓"); } catch { showFallback(); }
+  };
+  $("#again").onclick = () => { voiceTask(pool, topics); scrollTo(0, 0); };
+}
 
 /* ---------- motore domande ---------- */
 function record(q, ok, mode) {
@@ -207,7 +311,7 @@ function runQuiz(st) {
   const q = st.list[st.i]; const v = (st.cur ||= shuffledView(q));
   view.innerHTML = `
   <div class="progress"><span>Domanda ${st.i + 1} di ${st.list.length}</span>${exam ? `<span class="timer" id="tm"></span>` : `<span>✔ ${st.ok}</span>`}</div>
-  <div class="bar" style="margin-bottom:14px"><i style="width:${(st.i / st.list.length) * 100}%"></i></div>
+  <div class="bar neutral" style="margin-bottom:14px"><i style="width:${(st.i / st.list.length) * 100}%"></i></div>
   <div class="card">
     ${qHeader(q)}
     <div class="question">${esc(q.question)}</div>
@@ -264,7 +368,7 @@ function examIntro() {
   view.innerHTML = `<div class="card"><h2>Simulazione d'esame</h2>
     <p>${CFG.examQuestions} domande casuali da tutti gli argomenti, solo domande verificate.</p>
     <p>Hai <b>${CFG.examMinutes} minuti</b>. Le soluzioni compaiono alla fine.</p>
-    <p>Per superarla serve almeno <b>${Math.round(CFG.passThreshold * 10)}/10</b>, cioè l'${Math.round(CFG.passThreshold * 100)}%, come per il test finale del Tecnico di 3° livello (Regolamento SINW, art. 16).</p>
+    <p>Per superarla serve almeno <b>${Math.round(CFG.passThreshold * 10)}/10</b>, cioè l'${Math.round(CFG.passThreshold * 100)}%, come per il test finale del Tecnico di 3° livello (Regolamento generale, art. 16).</p>
     <button class="btn block" id="go" style="margin-top:12px">Inizia la simulazione</button></div>`;
   $("#go").onclick = () => {
     // un po' di tutto: estrazione bilanciata per argomento
@@ -380,6 +484,16 @@ function proposeForm() {
       toast("Proposta inviata, grazie!"); back();
     } catch (err) { toast(err.message.includes("Failed to fetch") ? "Sei offline: riprova più tardi." : err.message); btn.disabled = false; }
   };
+}
+
+/* ---------- fonti ---------- */
+function fontiPage() {
+  setTitle("Fonti", true);
+  view.innerHTML = `<div class="card"><h2>Documenti di riferimento</h2>
+    <table class="fonti"><thead><tr><th>Documento</th><th>Versione</th></tr></thead>
+    <tbody>${FONTI.map(([d, v]) => `<tr><td>${esc(d)}</td><td>${esc(v)}</td></tr>`).join("")}</tbody></table>
+    <p class="small muted" style="margin-top:14px">Strumento di studio non ufficiale. In caso di dubbio fa fede il testo dei documenti originali.
+    Per segnalare un documento più recente o proporne uno nuovo, scrivi all'amministratore.</p></div>`;
 }
 
 /* ---------- amministratore ---------- */

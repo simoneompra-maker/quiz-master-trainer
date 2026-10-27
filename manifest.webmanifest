@@ -1,12 +1,12 @@
 {
-  "name": "Quiz Master Trainer SINW",
+  "name": "Quiz Master Trainer",
   "short_name": "Quiz MT",
-  "description": "Preparazione al corso Master Trainer della Scuola Italiana Nordic Walking",
+  "description": "Preparazione al corso Master Trainer",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f4f6f3",
-  "theme_color": "#1f5f4a",
+  "background_color": "#ffffff",
+  "theme_color": "#C8102E",
   "lang": "it",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
