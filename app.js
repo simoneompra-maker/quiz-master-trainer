@@ -34,6 +34,7 @@ const S = {
   stats: store.get("stats", {}),          // {qid:{seen,correct,streak,open}}
   history: store.get("history", []),      // esami
   prefs: store.get("prefs", { topics: [], levels: [1, 2, 3], count: 20 }),
+  token: store.get("token", null),        // accesso allo storico spiegazioni (PIN personale)
   adminPin: null,
   stack: [],
 };
@@ -60,6 +61,24 @@ async function rpc(fn, args) {
   const data = txt ? JSON.parse(txt) : null;
   if (!r.ok) { const e = new Error((data && data.message) || r.statusText); e.code = data && data.message; throw e; }
   return data;
+}
+// Messaggi comprensibili per gli errori che arrivano dal database.
+const ERRORS = {
+  codice_non_valido: "Il codice corso è cambiato: esci e rientra con quello nuovo.",
+  sessione_non_valida: "Accesso allo storico scaduto: inserisci di nuovo il PIN.",
+  pin_formato: "Il PIN deve avere da 4 a 8 cifre.",
+  pin_uguale_iniziale: "Il PIN personale deve essere diverso dal PIN iniziale.",
+  cambia_pin_prima: "Prima scegli il tuo PIN personale.",
+  nome_non_valido: "Nome non valido: esci e rientra con nome e cognome.",
+  testo_troppo_lungo: "Il testo è troppo lungo.",
+  pin_non_valido: "PIN errato.",
+  valore_non_valido: "Valore non valido.",
+};
+function errMsg(e) {
+  const m = String(e?.message || e || "");
+  if (!navigator.onLine || /Failed to fetch|NetworkError|Load failed/i.test(m)) return "Connessione non riuscita: controlla di essere online.";
+  for (const k in ERRORS) if (m.includes(k)) return ERRORS[k];
+  return "Errore: " + m;
 }
 async function loadQuestions(code) {
   const list = await rpc("quiz_get_questions", { p_code: code });
@@ -95,6 +114,7 @@ function login() {
     const btn = e.submitter || $("#f button"); btn.disabled = true; $("#err").textContent = "Verifica in corso…";
     try {
       await loadQuestions(code);
+      if (S.token && S.user?.name.toLowerCase() !== name.toLowerCase()) leaveHistory(); // lo storico è di un'altra persona
       S.user = { name, code }; store.set("user", S.user); home();
     } catch (err) {
       $("#err").textContent = /codice_non_valido/.test(err.message) ? "Codice corso non valido." : "Connessione non riuscita. Riprova quando sei online.";
@@ -139,17 +159,21 @@ function home() {
   }).join("")}</div>
   ${S.history.length ? `<h3>Ultime simulazioni</h3><div class="card">${S.history.slice(-5).reverse().map((h) =>
     `<div class="row small"><span>${new Date(h.at).toLocaleDateString("it-IT")}</span><span class="spacer"></span><b class="${h.pct >= CFG.passThreshold * 100 ? "pass" : "fail"}">${h.ok}/${h.n} · ${h.pct}%</b></div>`).join("")}</div>` : ""}
-  <div class="grid2" style="margin-top:12px">
+  <button class="btn secondary block" id="hist" style="margin-top:12px">📈 Storico spiegazioni</button>
+  <div class="grid2" style="margin-top:10px">
     <button class="btn secondary" id="prop">✍️ Proponi una domanda</button>
     <button class="btn secondary" id="fonti">📚 Fonti</button>
   </div>
   <button class="btn secondary block" id="adm" style="margin-top:10px">🔐 Area amministratore</button>
-  <p class="small muted" style="text-align:center;margin-top:16px">v${CFG.appVersion} · <a href="#" id="logout" class="muted">Esci</a></p>`;
+  <p class="small muted" style="text-align:center;margin-top:16px">v${CFG.appVersion} · <a href="#" id="chpin" class="muted">Cambia PIN</a>${S.token ? ` · <a href="#" id="outh" class="muted">Esci dallo storico</a>` : ""} · <a href="#" id="logout" class="muted">Esci</a></p>`;
   view.querySelectorAll(".mode").forEach((b) => (b.onclick = () => ({ train: () => go(setup, "train"), exam: () => go(examIntro), review: () => go(startReview), flash: () => go(setup, "flash") }[b.dataset.m]())));
   $("#prop").onclick = () => go(proposeForm);
   $("#fonti").onclick = () => go(fontiPage);
+  $("#hist").onclick = () => go(historyPage);
   $("#adm").onclick = () => go(adminLogin);
-  $("#logout").onclick = (e) => { e.preventDefault(); if (confirm("Uscire? Le tue statistiche restano su questo dispositivo.")) { S.user = null; store.del("user"); login(); } };
+  $("#chpin").onclick = (e) => { e.preventDefault(); changePin(); };
+  if ($("#outh")) $("#outh").onclick = (e) => { e.preventDefault(); leaveHistory(); toast("Sei uscito dallo storico."); home(); };
+  $("#logout").onclick = (e) => { e.preventDefault(); if (confirm("Uscire? Le tue statistiche restano su questo dispositivo.")) { leaveHistory(); S.user = null; store.del("user"); login(); } };
   $("#sync").onclick = async () => {
     try { await loadQuestions(S.user.code); toast(`Domande aggiornate: ${S.questions.length}`); home(); }
     catch (e) { toast(/codice_non_valido/.test(e.message) ? "Il codice corso è cambiato: rientra." : "Sei offline: uso le domande salvate."); if (/codice_non_valido/.test(e.message)) login(); }
@@ -237,6 +261,7 @@ function makeVoiceTask(pool, topics) {
   if (kind === "sit") {
     const q = pick(sit), txt = q.question.trim();
     return {
+      topic: q.topic,
       title: `Caso pratico: ${txt}${/[.?!]$/.test(txt) ? "" : "."} Rispondi spiegando come interverresti e perché.`,
       points: keyPoints([[q], byTopic(["errori", "didattica", "eserciziario"])]),
     };
@@ -245,12 +270,12 @@ function makeVoiceTask(pool, topics) {
     const all = byTopic(["eserciziario"]);
     if (fonds.length) {
       const f = pick(fonds);
-      return { title: `Descrivi agli allievi un esercizio per: ${f.tema}, con obiettivo ed esecuzione.`, points: keyPoints([all.filter((q) => f.re.test(q.source)), all]) };
+      return { topic: "eserciziario", title: `Descrivi agli allievi un esercizio per: ${f.tema}, con obiettivo ed esecuzione.`, points: keyPoints([all.filter((q) => f.re.test(q.source)), all]) };
     }
-    return { title: `Descrivi agli allievi un esercizio per: ${TOPICS.eserciziario}, con obiettivo ed esecuzione.`, points: keyPoints([all]) };
+    return { topic: "eserciziario", title: `Descrivi agli allievi un esercizio per: ${TOPICS.eserciziario}, con obiettivo ed esecuzione.`, points: keyPoints([all]) };
   }
   const t = pick(plain), own = byTopic([t]);
-  return { title: `Spiega agli allievi: ${TOPICS[t] || t}.`, points: keyPoints(own.length >= 6 ? [own] : [own, byTopic(topics)]) };
+  return { topic: t, title: `Spiega agli allievi: ${TOPICS[t] || t}.`, points: keyPoints(own.length >= 6 ? [own] : [own, byTopic(topics)]) };
 }
 function voiceMessage(task) {
   return `Sei un esaminatore esperto del corso Master Trainer di Nordic Walking.
@@ -265,6 +290,18 @@ Poi chiedimi se voglio riprovare.
 PUNTI CHIAVE:
 ${task.points.map((q) => `- ${q.explanation.trim()} (fonte: ${q.source})`).join("\n")}`;
 }
+// Voto nel feedback dell'IA ("Voto: 8,5 / 10", "8.5/10", "Voto finale: 7"): vale l'ultimo trovato.
+function parseScore(t) {
+  const num = "(\\d{1,2}(?:[.,]\\d{1,2})?)";
+  let m, last = null;
+  for (const re of [new RegExp(num + "\\s*/\\s*10(?![\\d.,]*\\d)", "g"), new RegExp("\\bvoto(?:\\s+finale)?\\s*[:=]?\\s*\\**\\s*" + num + "(?![\\d/])", "gi")]) {
+    while ((m = re.exec(t))) last = m[1];
+    if (last != null) break;
+  }
+  if (last == null) return null;
+  const n = Math.round(+last.replace(",", ".") * 2) / 2;
+  return n >= 1 && n <= 10 ? n : null;
+}
 function voiceTask(pool, topics) {
   setTitle("Spiega a voce", true); document.onkeydown = null;
   const task = makeVoiceTask(pool, topics), msg = voiceMessage(task);
@@ -276,7 +313,36 @@ function voiceTask(pool, topics) {
     <p class="small muted" style="margin-top:14px">Incolla il messaggio in Claude, Gemini o ChatGPT, avvia la modalità vocale e spiega. Quando hai finito di' 'ho finito'.</p>
     <div class="row">${[["https://claude.ai/new", "Claude"], ["https://gemini.google.com/app", "Gemini"], ["https://chatgpt.com", "ChatGPT"]].map(([u, n]) => `<a class="btn ghost" href="${u}" target="_blank" rel="noopener">${n} ↗</a>`).join("")}</div>
     <p class="small muted">${task.points.length} punti chiave inclusi nel messaggio (non mostrati qui, così non li leggi prima).</p>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Salva il feedback</h3>
+    <p class="small muted">Incolla la risposta dell'IA: argomento e compito si aggiungono da soli e la trovi nello storico spiegazioni.</p>
+    <label for="fbText">Feedback ricevuto</label><textarea id="fbText" rows="6" maxlength="20000" placeholder="Incolla qui la risposta dell'IA"></textarea>
+    <label for="fbScore">Voto (facoltativo)</label><input id="fbScore" type="number" min="1" max="10" step="0.5" inputmode="decimal" placeholder="1-10" style="max-width:140px">
+    <p class="small" id="fbInfo"></p>
+    <button class="btn block" id="fbSave">Salva</button>
   </div>`;
+  let autoScore = true; // il voto letto dal testo non sovrascrive quello scritto a mano
+  $("#fbScore").oninput = () => { autoScore = !$("#fbScore").value; };
+  $("#fbText").oninput = () => {
+    const s = parseScore($("#fbText").value);
+    if (s != null && autoScore) { $("#fbScore").value = s; $("#fbInfo").textContent = `Voto ${String(s).replace(".", ",")} letto dal testo.`; }
+  };
+  $("#fbSave").onclick = async () => {
+    const text = $("#fbText").value.trim(), sc = $("#fbScore"), info = $("#fbInfo");
+    const score = sc.value === "" ? null : sc.valueAsNumber;
+    info.className = "small dlg-err";
+    if (!text && score == null) { info.textContent = "Incolla il feedback o inserisci un voto."; return; }
+    if (score != null && (!(score >= 1 && score <= 10) || !sc.checkValidity())) { info.textContent = "Il voto va da 1 a 10, a passi di 0,5."; return; }
+    if (!navigator.onLine) { info.textContent = "Serve la connessione per salvare il feedback."; return; }
+    const btn = $("#fbSave"); btn.disabled = true; info.textContent = "";
+    try {
+      await userRpc("quiz_feedback_add", { p_topic: task.topic, p_task: task.title, p_score: score, p_feedback: text });
+      sc.value = ""; $("#fbText").value = ""; autoScore = true;
+      info.className = "small saved"; info.textContent = "✓ Feedback salvato"; toast("Feedback salvato");
+    } catch (e) { if (e.message !== CANCELLED) info.textContent = e.message; }
+    finally { btn.disabled = false; }
+  };
   const showFallback = () => {
     $("#fallback").innerHTML = `<p class="small muted" style="margin-top:12px">Copia non riuscita: seleziona il testo qui sotto e copialo.</p><textarea id="msg" readonly rows="10">${esc(msg)}</textarea>`;
     const ta = $("#msg"); ta.focus(); ta.select();
@@ -430,16 +496,19 @@ function flash(list, i, back) {
 const back_ = () => back();
 
 /* ---------- dialog generico ---------- */
-function dialog(html, onSubmit) {
+// onSubmit può restituire "keep" per lasciare aperta la finestra (es. quando apre il passo successivo).
+function dialog(html, onSubmit, { ok = "Invia", onCancel } = {}) {
   const d = $("#dlg"), f = $("#dlgForm");
-  f.innerHTML = html + `<div class="row end" style="margin-top:14px"><button class="btn secondary" value="cancel" formnovalidate>Annulla</button><button class="btn" value="ok">Invia</button></div>`;
+  f.innerHTML = html + `<p class="small dlg-err" id="dlgErr" role="alert"></p><div class="row end" style="margin-top:14px"><button class="btn secondary" value="cancel" formnovalidate>Annulla</button><button class="btn" value="ok">${ok}</button></div>`;
   f.onsubmit = async (e) => {
-    if (e.submitter?.value !== "ok") return;
+    if (e.submitter?.value !== "ok") { onCancel?.(); return; }
     e.preventDefault();
-    const btn = e.submitter; btn.disabled = true;
-    try { await onSubmit(f); d.close(); } catch (err) { toast(err.message || "Errore"); } finally { btn.disabled = false; }
+    const btn = e.submitter; btn.disabled = true; $("#dlgErr", f).textContent = "";
+    try { if ((await onSubmit(f)) !== "keep") d.close(); } catch (err) { $("#dlgErr", f).textContent = err.message || "Errore"; } finally { btn.disabled = false; }
   };
-  d.showModal();
+  d.oncancel = () => onCancel?.();
+  if (!d.open) d.showModal();
+  f.querySelector("input,textarea")?.focus();
 }
 function reportDialog(q) {
   dialog(`<h2>Segnala un errore</h2><p class="small muted">${esc(q.question)}</p>
@@ -450,6 +519,78 @@ function reportDialog(q) {
       catch (e) { throw new Error("Invio non riuscito: " + e.message); }
       toast("Grazie! Segnalazione inviata.");
     });
+}
+
+/* ---------- PIN personale (solo per lo storico spiegazioni) ---------- */
+const CANCELLED = "annullato";
+const setToken = (t) => { S.token = t; t ? store.set("token", t) : store.del("token"); };
+const pinField = (id, label, auto) => `<label for="${id}">${label}</label><input id="${id}" type="password" inputmode="numeric" autocomplete="${auto}" required maxlength="8">`;
+function pinLoginDialog(resolve) {
+  dialog(`<h2>Accesso allo storico</h2>
+    <p class="small muted">Accedi come <b>${esc(S.user.name)}</b>. Primo accesso? Usa il PIN iniziale ricevuto dall'amministratore, poi sceglierai il tuo.</p>
+    ${pinField("upin", "PIN", "current-password")}
+    <p class="small muted">PIN dimenticato? Scrivi all'amministratore, che lo azzera: rientrerai con il PIN iniziale e ne sceglierai uno nuovo.</p>`,
+    async (f) => {
+      if (!navigator.onLine) throw new Error("Serve la connessione per accedere allo storico.");
+      let r;
+      try { r = await rpc("quiz_user_login", { p_code: S.user.code, p_name: S.user.name, p_pin: $("#upin", f).value.trim() }); }
+      catch (e) { throw new Error(errMsg(e)); }
+      if (r?.error === "pin_non_valido") {
+        $("#upin", f).value = "";
+        const n = r.attempts_left;
+        throw new Error(n == null ? "PIN errato." : n > 0 ? `PIN errato, ti ${n === 1 ? "resta 1 tentativo" : `restano ${n} tentativi`}.` : "PIN errato. Troppi tentativi: riprova tra 15 minuti.");
+      }
+      if (r?.error === "utente_bloccato") {
+        const min = Math.max(1, Math.ceil((Date.parse(r.locked_until) - Date.now()) / 60000) || 15);
+        throw new Error(`Troppi tentativi: riprova tra ${min} ${min === 1 ? "minuto" : "minuti"}.`);
+      }
+      if (!r?.token) throw new Error("Accesso non riuscito.");
+      if (r.must_change) { choosePinDialog(r.token, resolve, true); return "keep"; }
+      setToken(r.token); resolve(r.token);
+    }, { ok: "Entra", onCancel: () => resolve(null) });
+}
+// first = true: scelta obbligatoria dopo il PIN iniziale; se annulla, la sessione non viene tenuta.
+function choosePinDialog(token, resolve, first) {
+  dialog(`<h2>${first ? "Scegli il tuo PIN personale" : "Cambia PIN"}</h2>
+    <p class="small muted">${first ? "Serve per salvare e vedere lo storico, anche da altri dispositivi. " : ""}Da 4 a 8 cifre, diverso dal PIN iniziale.</p>
+    ${pinField("np1", "Nuovo PIN", "new-password")}${pinField("np2", "Ripeti il nuovo PIN", "new-password")}`,
+    async (f) => {
+      const a = $("#np1", f).value.trim(), b = $("#np2", f).value.trim();
+      if (!/^\d{4,8}$/.test(a)) throw new Error(ERRORS.pin_formato);
+      if (a !== b) throw new Error("I due PIN non coincidono.");
+      try { await rpc("quiz_user_set_pin", { p_token: token, p_new_pin: a }); }
+      catch (e) { if (/sessione_non_valida/.test(e.message)) setToken(null); throw new Error(errMsg(e)); }
+      if (first) S.firstPinAt = Date.now();
+      setToken(token); toast(first ? "PIN personale salvato ✓" : "PIN cambiato ✓"); resolve(token);
+    }, { ok: "Salva PIN", onCancel: () => { if (first) rpc("quiz_user_logout", { p_token: token }).catch(() => {}); resolve(null); } });
+}
+// Restituisce un token valido, chiedendo il PIN se serve (null se l'utente annulla).
+function requireToken() {
+  return S.token ? Promise.resolve(S.token) : new Promise((res) => pinLoginDialog(res));
+}
+// Chiamata con il token; se la sessione non è più valida richiede il PIN e riprova una volta.
+async function userRpc(fn, args = {}) {
+  for (let i = 0; ; i++) {
+    const token = await requireToken();
+    if (!token) throw new Error(CANCELLED);
+    try { return await rpc(fn, { p_token: token, ...args }); }
+    catch (e) {
+      if (i === 0 && /sessione_non_valida|cambia_pin_prima|uuid/i.test(e.message)) { setToken(null); continue; }
+      throw new Error(errMsg(e));
+    }
+  }
+}
+async function changePin() {
+  if (!navigator.onLine) return toast("Serve la connessione per cambiare il PIN.");
+  const chosenBefore = S.firstPinAt;
+  const token = await requireToken(); if (!token) return home();
+  if (S.firstPinAt !== chosenBefore) return home(); // ha appena scelto il PIN personale: basta così
+  await new Promise((r) => setTimeout(r)); // lascia chiudere la finestra del PIN attuale
+  choosePinDialog(token, () => home(), false);
+}
+async function leaveHistory() {
+  const t = S.token; setToken(null);
+  if (t) rpc("quiz_user_logout", { p_token: t }).catch(() => {});
 }
 
 /* ---------- proponi domanda ---------- */
@@ -486,6 +627,52 @@ function proposeForm() {
   };
 }
 
+/* ---------- storico spiegazioni ---------- */
+const fmtScore = (n) => (n == null ? "–" : (Math.round(n * 10) / 10).toLocaleString("it-IT"));
+const avgOf = (a) => { const s = a.filter((x) => x.score != null).map((x) => +x.score); return s.length ? s.reduce((x, y) => x + y, 0) / s.length : null; };
+async function historyPage() {
+  setTitle("Storico spiegazioni", true);
+  if (!navigator.onLine) { view.innerHTML = `<div class="card empty">📡 Lo storico richiede la connessione.</div>`; return; }
+  view.innerHTML = `<div class="card empty">Caricamento…</div>`;
+  let list;
+  try { list = await userRpc("quiz_feedback_list"); }
+  catch (e) {
+    if (S.stack[S.stack.length - 1]?.[0] !== historyPage) return; // l'utente è già tornato indietro
+    if (e.message === CANCELLED) return back();
+    view.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return;
+  }
+  if (S.stack[S.stack.length - 1]?.[0] !== historyPage) return;
+  if (!list.length) {
+    view.innerHTML = `<div class="card empty">Nessuna spiegazione salvata.<br>Allenati con <b>Spiega a voce</b> e salva il feedback dell'IA: lo ritrovi qui.</div>`; return;
+  }
+  const byT = {}; list.forEach((f) => (byT[f.topic] ||= []).push(f));
+  const rows = Object.entries(byT).map(([k, a]) => ({ k, n: a.length, avg: avgOf(a) }))
+    .sort((a, b) => (a.avg ?? 99) - (b.avg ?? 99) || b.n - a.n);
+  const all = avgOf(list);
+  const cls = (v) => (v == null ? "" : v < 6 ? "fail" : v < 8 ? "mid" : "pass");
+  view.innerHTML = `<div class="card">
+      <div class="grid2 stats"><div><div class="big">${list.length}</div><div class="small muted">${list.length === 1 ? "prova" : "prove"}</div></div>
+      <div><div class="big ${cls(all)}">${fmtScore(all)}</div><div class="small muted">voto medio</div></div></div>
+      <h3>Per argomento</h3>
+      <table class="fonti"><thead><tr><th>Argomento</th><th class="num">Prove</th><th class="num">Voto medio</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr><td>${esc(TOPICS[r.k] || r.k || "–")}</td><td class="num">${r.n}</td><td class="num">${r.avg == null ? `<span class="muted">–</span>` : `<b class="${cls(r.avg)}">${fmtScore(r.avg)}</b>`}</td></tr>`).join("")}</tbody></table>
+      <p class="small muted" style="margin-top:8px">In cima gli argomenti con il voto più basso: lì serve più allenamento.</p>
+    </div>
+    <h3>Le tue prove</h3>
+    <div id="hl">${list.map((f) => `<details class="card hist" data-id="${esc(f.id)}"><summary>
+        <div class="row"><span class="small muted">${new Date(f.created_at).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span><span class="spacer"></span>${f.score == null ? `<span class="small muted">senza voto</span>` : `<b class="${cls(+f.score)}">${fmtScore(+f.score)}/10</b>`}</div>
+        <div class="tag" style="display:inline-block;margin:6px 0">${esc(TOPICS[f.topic] || f.topic || "–")}</div>
+        <div class="hist-task">${esc(f.task)}</div></summary>
+      <div class="feedback">${esc(f.feedback || "(nessun testo)")}</div>
+      <div class="row end"><button class="btn ghost" data-del="${esc(f.id)}">🗑 Elimina</button></div></details>`).join("")}</div>`;
+  $("#hl").onclick = async (e) => {
+    const id = e.target.closest("[data-del]")?.dataset.del; if (!id) return;
+    if (!confirm("Eliminare questa prova dallo storico?")) return;
+    try { await userRpc("quiz_feedback_delete", { p_id: id }); toast("Prova eliminata"); historyPage(); }
+    catch (err) { if (err.message !== CANCELLED) toast(err.message); }
+  };
+}
+
 /* ---------- fonti ---------- */
 function fontiPage() {
   setTitle("Fonti", true);
@@ -512,9 +699,11 @@ async function adminRefresh() { S.admin = await rpc("quiz_admin_list", { p_pin: 
 function adminPanel(tab = "prop") {
   setTitle("Area amministratore", true);
   const A = S.admin;
-  const tabs = { prop: `Proposte (${A.proposals.length})`, rep: `Segnalazioni (${A.reports.length})`, q: "Domande", set: "Impostazioni" };
+  const tabs = { prop: `Proposte (${A.proposals.length})`, rep: `Segnalazioni (${A.reports.length})`, q: "Domande", users: "Corsisti", set: "Impostazioni" };
   view.innerHTML = `<div class="tabs">${Object.entries(tabs).map(([k, v]) => `<button class="chip" data-t="${k}" aria-pressed="${k === tab}">${v}</button>`).join("")}</div><div id="ap"></div>`;
   view.querySelector(".tabs").onclick = (e) => { const b = e.target.closest(".chip"); if (b) adminPanel(b.dataset.t); };
+  const cur = view.querySelector('.tabs [aria-pressed="true"]'), tb = cur.parentElement;
+  tb.scrollLeft = Math.max(0, cur.offsetLeft - tb.offsetLeft - (tb.clientWidth - cur.offsetWidth) / 2); // scheda attiva sempre visibile
   const ap = $("#ap");
   if (tab === "prop") {
     ap.innerHTML = A.proposals.length ? A.proposals.map((p, i) => `<div class="card"><div class="small muted">${esc(p.author)} · ${new Date(p.created_at).toLocaleString("it-IT")}</div>
@@ -553,15 +742,43 @@ function adminPanel(tab = "prop") {
     $("#nq").onclick = () => editQuestion({ status: "verificata" }, null, "q");
     $("#ql").onclick = (e) => { const c = e.target.closest("[data-id]"); if (!c) return; const q = (inact ? A.inactive : S.questions).find((x) => x.id === c.dataset.id); editQuestion(q, null, "q"); };
     draw();
+  } else if (tab === "users") {
+    adminUsers(ap);
   } else {
     ap.innerHTML = `<div class="card"><h2>Codice corso</h2><p class="small muted">Da comunicare ai corsisti. Cambiandolo, chi è già dentro dovrà reinserirlo.</p>
       <div class="row"><input type="text" id="cc" placeholder="Nuovo codice corso" style="flex:1"><button class="btn" id="scc">Salva</button></div></div>
+      <div class="card"><h2>PIN iniziale comune</h2><p class="small muted">Lo usano i corsisti al primo accesso allo storico e dopo un azzeramento; poi ognuno sceglie il suo. Chi ha già il PIN personale non cambia nulla.</p>
+      <div class="row"><input type="password" id="dp" inputmode="numeric" maxlength="8" placeholder="Nuovo PIN iniziale (4-8 cifre)" style="flex:1"><button class="btn" id="sdp">Salva</button></div></div>
       <div class="card"><h2>PIN amministratore</h2><div class="row"><input type="password" id="np" placeholder="Nuovo PIN" style="flex:1"><button class="btn" id="snp">Salva</button></div></div>
       <div class="card"><button class="btn secondary block" id="lo">Esci dall'area amministratore</button></div>`;
     $("#scc").onclick = async () => { const v = $("#cc").value.trim(); if (v.length < 4) return toast("Almeno 4 caratteri"); await rpc("quiz_admin_set_code", { p_pin: S.adminPin, p_key: "course_code", p_new: v }); S.user.code = v; store.set("user", S.user); toast("Codice corso aggiornato"); };
     $("#snp").onclick = async () => { const v = $("#np").value.trim(); if (v.length < 4) return toast("Almeno 4 caratteri"); await rpc("quiz_admin_set_code", { p_pin: S.adminPin, p_key: "admin_pin", p_new: v }); S.adminPin = v; toast("PIN aggiornato"); };
+    $("#sdp").onclick = async () => {
+      const v = $("#dp").value.trim(); if (!/^\d{4,8}$/.test(v)) return toast("Il PIN iniziale deve avere da 4 a 8 cifre");
+      try { await rpc("quiz_admin_set_code", { p_pin: S.adminPin, p_key: "default_pin", p_new: v }); $("#dp").value = ""; toast("PIN iniziale aggiornato"); }
+      catch (e) { toast(errMsg(e)); }
+    };
     $("#lo").onclick = () => { S.adminPin = null; S.admin = null; home(); };
   }
+}
+async function adminUsers(ap) {
+  ap.innerHTML = `<div class="card empty">Caricamento…</div>`;
+  let users;
+  try { users = (await rpc("quiz_admin_users", { p_pin: S.adminPin })) || []; }
+  catch (e) { ap.innerHTML = `<div class="card empty">${esc(errMsg(e))}</div>`; return; }
+  if (!ap.isConnected) return;
+  const when = (d) => (d ? new Date(d).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "mai");
+  ap.innerHTML = `<p class="small muted">Compaiono i corsisti che hanno attivato lo storico con il PIN. Il testo dei feedback è privato e non si vede qui.</p>
+    ${users.length ? users.map((u) => `<div class="card"><div class="row"><b style="color:var(--text)">${esc(u.name)}</b><span class="spacer"></span>
+      ${u.locked ? '<span class="tag lock">bloccato</span>' : ""}${u.must_change ? '<span class="tag val">deve scegliere il PIN</span>' : ""}</div>
+      <div class="small muted" style="margin:6px 0">Ultimo accesso: ${when(u.last_seen)} · ${u.feedback_count} ${+u.feedback_count === 1 ? "prova" : "prove"} · voto medio ${fmtScore(u.avg_score == null ? null : +u.avg_score)}</div>
+      <div class="row end"><button class="btn secondary" data-reset="${esc(u.id)}" data-name="${esc(u.name)}">Azzera PIN</button></div></div>`).join("") : `<div class="card empty">Nessun corsista ha ancora attivato lo storico.</div>`}`;
+  ap.onclick = async (e) => {
+    const b = e.target.closest("[data-reset]"); if (!b) return;
+    if (!confirm(`Azzerare il PIN di ${b.dataset.name}? Rientrerà con il PIN iniziale comune e ne sceglierà uno nuovo. Il suo storico resta.`)) return;
+    try { await rpc("quiz_admin_reset_user_pin", { p_pin: S.adminPin, p_user_id: b.dataset.reset }); toast(`PIN di ${b.dataset.name} azzerato`); adminUsers(ap); }
+    catch (err) { toast(errMsg(err)); }
+  };
 }
 function editQuestion(q, after, tabBack) {
   setTitle(q.id ? "Modifica domanda" : "Nuova domanda", true);

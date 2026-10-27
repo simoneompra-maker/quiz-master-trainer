@@ -83,9 +83,26 @@ textarea{min-height:80px;resize:vertical}
 .fonti th{text-align:left;color:var(--red);border-bottom:2px solid var(--text);padding:8px 6px}
 .fonti td{border-bottom:1px solid var(--line);padding:10px 6px;vertical-align:top}
 .fonti td:first-child{font-weight:600}
+.fonti .num{text-align:right;white-space:nowrap}
+.mid{color:var(--accent)}
+.dlg-err{color:var(--ko);font-weight:600;min-height:1em;margin:10px 0 0}
+.dlg-err:empty{display:none}
+.saved{color:var(--ok);font-weight:700}
+.stats{text-align:center}
+.stats .big{margin:0}
+details.hist{padding:0}
+details.hist>summary{list-style:none;padding:14px 16px;cursor:pointer;margin:0;text-transform:none;letter-spacing:normal;font-size:1rem;font-weight:400;color:var(--text)}
+details.hist>summary::-webkit-details-marker{display:none}
+details.hist[open]>summary{border-bottom:1px solid var(--line)}
+details.hist>:not(summary){margin:0 16px}
+details.hist .row.end{padding:6px 0 10px}
+.hist-task{font-weight:600}
+.feedback{white-space:pre-wrap;overflow-wrap:anywhere;padding:12px 0;font-size:.95rem}
+.tag.lock{background:var(--ko-bg);color:var(--ko);border-color:transparent}
+input[type=number]{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--text);font:inherit}
 .list-item{border-top:1px solid var(--line);padding:12px 0}
 .list-item:first-child{border-top:0}
-.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(120px);background:#222;color:#fff;padding:10px 16px;border-radius:10px;transition:transform .25s;max-width:calc(100% - 32px);z-index:20}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(120px);background:#222;color:#fff;padding:10px 16px;border-radius:10px;transition:transform .25s;max-width:calc(100% - 32px);z-index:20;pointer-events:none}
 .toast.show{transform:translateX(-50%) translateY(0)}
 dialog{border:0;border-radius:16px;padding:0;width:min(560px,calc(100% - 32px));background:var(--surface);color:var(--text)}
 dialog::backdrop{background:rgba(0,0,0,.45)}
