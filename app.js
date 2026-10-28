@@ -73,12 +73,29 @@ const ERRORS = {
   testo_troppo_lungo: "Il testo è troppo lungo.",
   pin_non_valido: "PIN errato.",
   valore_non_valido: "Valore non valido.",
+  formato_non_supportato: "Formato audio non supportato: usa MP3, M4A, WAV, OGG, AAC o WEBM.",
+  file_troppo_grande: "File oltre 50 MB: convertilo in MP3 e riprova.",
+  file_non_caricato: "Il file non risulta caricato: riprova.",
+  dati_non_validi: "Dati non validi: controlla i campi.",
+  non_trovato: "Podcast non trovato (forse è già stato eliminato).",
+  errore_server: "Errore del server: riprova tra poco.",
 };
 function errMsg(e) {
   const m = String(e?.message || e || "");
   if (!navigator.onLine || /Failed to fetch|NetworkError|Load failed/i.test(m)) return "Connessione non riuscita: controlla di essere online.";
   for (const k in ERRORS) if (m.includes(k)) return ERRORS[k];
   return "Errore: " + m;
+}
+// Funzione Supabase dei podcast: corpo JSON con "action"; gli errori arrivano come {error: "..."}.
+async function podcastApi(body) {
+  const r = await fetch(`${CFG.supabaseUrl}/functions/v1/quiz-podcasts`, {
+    method: "POST",
+    headers: { apikey: CFG.supabaseKey, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data = null; try { data = await r.json(); } catch {}
+  if (!r.ok) throw new Error((data && data.error) || "errore_server");
+  return data;
 }
 async function loadQuestions(code) {
   const list = await rpc("quiz_get_questions", { p_code: code });
@@ -159,7 +176,8 @@ function home() {
   }).join("")}</div>
   ${S.history.length ? `<h3>Ultime simulazioni</h3><div class="card">${S.history.slice(-5).reverse().map((h) =>
     `<div class="row small"><span>${new Date(h.at).toLocaleDateString("it-IT")}</span><span class="spacer"></span><b class="${h.pct >= CFG.passThreshold * 100 ? "pass" : "fail"}">${h.ok}/${h.n} · ${h.pct}%</b></div>`).join("")}</div>` : ""}
-  <button class="btn secondary block" id="hist" style="margin-top:12px">📈 Storico spiegazioni</button>
+  <button class="btn secondary block" id="pods" style="margin-top:12px">🎧 Ascolta i podcast</button>
+  <button class="btn secondary block" id="hist" style="margin-top:10px">📈 Storico spiegazioni</button>
   <div class="grid2" style="margin-top:10px">
     <button class="btn secondary" id="prop">✍️ Proponi una domanda</button>
     <button class="btn secondary" id="fonti">📚 Fonti</button>
@@ -169,6 +187,7 @@ function home() {
   view.querySelectorAll(".mode").forEach((b) => (b.onclick = () => ({ train: () => go(setup, "train"), exam: () => go(examIntro), review: () => go(startReview), flash: () => go(setup, "flash") }[b.dataset.m]())));
   $("#prop").onclick = () => go(proposeForm);
   $("#fonti").onclick = () => go(fontiPage);
+  $("#pods").onclick = () => go(podcastPage);
   $("#hist").onclick = () => go(historyPage);
   $("#adm").onclick = () => go(adminLogin);
   $("#chpin").onclick = (e) => { e.preventDefault(); changePin(); };
@@ -673,6 +692,181 @@ async function historyPage() {
   };
 }
 
+/* ---------- podcast ---------- */
+const POD_MAX = 50 * 1024 * 1024;
+const POD_TYPES = ["audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/m4a", "audio/aac", "audio/wav", "audio/x-wav", "audio/ogg", "audio/webm"];
+const POD_EXT = { mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", ogg: "audio/ogg", aac: "audio/aac", webm: "audio/webm" };
+const POD_RATES = [1, 1.25, 1.5];
+const podTopic = (k) => TOPICS[k] || (k === "generale" ? "Generale" : k || "Generale");
+const podType = (f) => f.type || POD_EXT[(f.name.split(".").pop() || "").toLowerCase()] || "";
+const fmtDur = (s) => {
+  if (!(s > 0)) return "";
+  s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${String(m).padStart(2, "0")}:${x}`;
+};
+const fmtMB = (b) => (b / 1048576).toLocaleString("it-IT", { maximumFractionDigits: 1 }) + " MB";
+const fmtDay = (d) => new Date(d).toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit", year: "numeric" });
+const byTopicOrder = (a, b) => { const o = Object.keys(TOPICS), i = (k) => (o.includes(k) ? o.indexOf(k) : 999); return i(a) - i(b) || String(a).localeCompare(b); };
+// Un solo audio alla volta in tutta l'app.
+document.addEventListener("play", (e) => document.querySelectorAll("audio").forEach((a) => a !== e.target && a.pause()), true);
+
+async function podcastPage() {
+  setTitle("Podcast", true);
+  view.innerHTML = `<div class="card empty">Caricamento…</div>`;
+  let list;
+  try {
+    if (!navigator.onLine) throw new Error("offline");
+    list = (await podcastApi({ action: "list", code: S.user.code })).podcasts || [];
+  } catch (e) {
+    if (S.stack[S.stack.length - 1]?.[0] !== podcastPage) return; // l'utente è già tornato indietro
+    if (/codice_non_valido/.test(e.message)) { toast("Il codice corso è cambiato: rientra."); login(); return; }
+    view.innerHTML = `<div class="card empty">📡 Per ascoltare i podcast serve la connessione.</div>`; return;
+  }
+  if (S.stack[S.stack.length - 1]?.[0] !== podcastPage) return;
+  renderPodcasts(list, "all");
+}
+function renderPodcasts(list, filter) {
+  const note = `<p class="small muted" style="margin-top:16px">Podcast di ripasso generati con l'intelligenza artificiale a partire dai documenti del corso: possono contenere imprecisioni, in caso di dubbio fa fede il testo originale (vedi Fonti).</p>`;
+  if (!list.length) { view.innerHTML = `<div class="card empty">Nessun podcast disponibile per ora.</div>${note}`; return; }
+  const rate = store.get("podrate", 1), seen = store.get("podseen", {});
+  const topics = [...new Set(list.map((p) => p.topic || "generale"))].sort(byTopicOrder);
+  const shown = topics.filter((t) => filter === "all" || t === filter);
+  view.innerHTML = `
+    <div class="chips" id="ptop"><button class="chip" data-t="all" aria-pressed="${filter === "all"}">Tutti</button>${topics.map((t) => `<button class="chip" data-t="${esc(t)}" aria-pressed="${filter === t}">${esc(podTopic(t))}</button>`).join("")}</div>
+    <div class="row" style="margin-top:10px"><span class="small muted">Velocità</span><div class="chips" id="prate">${POD_RATES.map((r) => `<button class="chip" data-r="${r}" aria-pressed="${rate === r}">${String(r).replace(".", ",")}x</button>`).join("")}</div></div>
+    ${shown.map((t) => `<h3>${esc(podTopic(t))}</h3>` + list.filter((p) => (p.topic || "generale") === t).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).map((p) => `
+      <div class="card pod" data-id="${esc(p.id)}">
+        <div class="row"><b class="pod-title">${esc(p.title)}</b><span class="spacer"></span>${seen[p.id] ? '<span class="seen">✓ ascoltato</span>' : ""}</div>
+        <div class="small muted">${[esc(podTopic(p.topic)), fmtDur(p.duration_sec), fmtDay(p.created_at)].filter(Boolean).join(" · ")}</div>
+        ${p.description ? `<p class="small">${esc(p.description)}</p>` : ""}
+        <audio controls preload="none" src="${esc(p.url)}" data-id="${esc(p.id)}" data-dur="${+p.duration_sec || ""}"></audio>
+      </div>`).join("")).join("")}
+    ${note}`;
+  const savePos = (a) => { if (a.ended || !(a.currentTime > 0)) return; const p = store.get("podpos", {}); p[a.dataset.id] = Math.floor(a.currentTime); store.set("podpos", p); };
+  view.querySelectorAll("audio").forEach((a) => {
+    a.defaultPlaybackRate = a.playbackRate = rate;
+    a.onloadedmetadata = () => {
+      const s = store.get("podpos", {})[a.dataset.id];
+      const d = isFinite(a.duration) ? a.duration : +a.dataset.dur || Infinity; // senza durata dal file uso quella registrata
+      if (s && d - s > 10) a.currentTime = s;
+      a.playbackRate = store.get("podrate", 1);
+    };
+    a.ontimeupdate = () => { if (Date.now() - (a._saved || 0) >= 5000) { a._saved = Date.now(); savePos(a); } };
+    a.onpause = () => savePos(a);
+    a.onended = () => {
+      const p = store.get("podpos", {}); delete p[a.dataset.id]; store.set("podpos", p);
+      const s = store.get("podseen", {}); s[a.dataset.id] = Date.now(); store.set("podseen", s);
+      const row = a.closest(".pod").querySelector(".row");
+      if (!row.querySelector(".seen")) row.insertAdjacentHTML("beforeend", '<span class="seen">✓ ascoltato</span>');
+    };
+  });
+  $("#ptop").onclick = (e) => {
+    const b = e.target.closest(".chip"); if (!b) return;
+    view.querySelectorAll("audio").forEach((a) => { savePos(a); a.pause(); });
+    renderPodcasts(list, b.dataset.t);
+  };
+  $("#prate").onclick = (e) => {
+    const b = e.target.closest(".chip"); if (!b) return;
+    const r = +b.dataset.r; store.set("podrate", r);
+    $("#prate").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", c === b));
+    view.querySelectorAll("audio").forEach((a) => (a.defaultPlaybackRate = a.playbackRate = r));
+  };
+}
+
+// Area amministratore: caricamento ed elenco dei podcast.
+function podAdminError(e) {
+  if (/pin_non_valido/.test(e.message)) { S.adminPin = null; S.admin = null; toast("PIN amministratore non più valido: rientra."); adminLogin(); return; }
+  toast(errMsg(e));
+}
+function putWithProgress(url, file, type, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", url); x.setRequestHeader("Content-Type", type);
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    x.onload = () => (x.status >= 200 && x.status < 300 ? resolve() : reject(new Error("file_non_caricato")));
+    x.onerror = () => reject(new Error("Failed to fetch"));
+    x.send(file);
+  });
+}
+async function adminPodcasts(ap) {
+  ap.innerHTML = `<div class="card"><h2>Carica un nuovo podcast</h2>
+    <form id="pform" novalidate>
+      <label for="pfile">File audio (MP3, M4A, WAV, OGG, AAC, WEBM · max 50 MB)</label><input id="pfile" type="file" accept="audio/*">
+      <p class="small muted" id="pinfo"></p>
+      <label for="ptopic">Argomento</label><select id="ptopic">${Object.entries(TOPICS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}<option value="generale">Generale</option></select>
+      <label for="ptitle">Titolo</label><input id="ptitle" type="text" required maxlength="200">
+      <label for="pdesc">Descrizione (facoltativa)</label><textarea id="pdesc" maxlength="2000"></textarea>
+      <div id="pprog" hidden style="margin-top:12px"><div class="bar"><i style="width:0%"></i></div><p class="small muted" id="ppct">0%</p></div>
+      <button class="btn block" id="pgo" style="margin-top:12px">Carica e pubblica</button>
+    </form></div>
+    <div id="plist"><div class="card empty">Caricamento…</div></div>`;
+  let dur = null, pick = 0;
+  $("#pfile").onchange = () => {
+    const f = $("#pfile").files[0], my = ++pick; dur = null; $("#pinfo").textContent = "";
+    if (!f) return;
+    if (!$("#ptitle").value.trim()) $("#ptitle").value = f.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+    $("#pinfo").textContent = fmtMB(f.size);
+    const u = URL.createObjectURL(f), a = new Audio();
+    a.preload = "metadata";
+    a.onloadedmetadata = () => { URL.revokeObjectURL(u); if (my !== pick) return; dur = isFinite(a.duration) ? Math.round(a.duration) : null; $("#pinfo").textContent = `${fmtMB(f.size)}${dur ? " · durata " + fmtDur(dur) : ""}`; };
+    a.onerror = () => { URL.revokeObjectURL(u); if (my === pick) $("#pinfo").textContent = `${fmtMB(f.size)} · durata non leggibile`; };
+    a.src = u;
+  };
+  $("#pform").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = $("#pfile").files[0], type = f ? podType(f) : "", title = $("#ptitle").value.trim();
+    if (!f) return toast("Scegli un file audio");
+    if (f.size > POD_MAX) return toast("File oltre 50 MB: convertilo in MP3 e riprova");
+    if (!POD_TYPES.includes(type)) return toast(ERRORS.formato_non_supportato);
+    if (!title) return toast("Scrivi il titolo");
+    const btn = $("#pgo"), bar = $("#pprog i"), pct = $("#ppct");
+    const show = (p, t) => { $("#pprog").hidden = false; bar.style.width = Math.round(p * 100) + "%"; pct.textContent = t || Math.round(p * 100) + "%"; };
+    btn.disabled = true; show(0, "Preparazione…");
+    try {
+      const up = await podcastApi({ action: "upload_url", pin: S.adminPin, contentType: type, size: f.size });
+      await putWithProgress(up.signedUrl, f, type, (p) => show(p));
+      show(1, "Registrazione…");
+      await podcastApi({ action: "register", pin: S.adminPin, path: up.path, topic: $("#ptopic").value, title, description: $("#pdesc").value.trim(), size: f.size, duration: dur });
+      toast("Podcast pubblicato"); adminPodcasts(ap);
+    } catch (err) { $("#pprog").hidden = true; podAdminError(err); }
+    finally { btn.disabled = false; }
+  };
+  let list;
+  try { list = (await podcastApi({ action: "admin_list", pin: S.adminPin })).podcasts || []; }
+  catch (err) { if (!ap.isConnected) return; $("#plist").innerHTML = `<div class="card empty">${esc(errMsg(err))}</div>`; if (/pin_non_valido/.test(err.message)) podAdminError(err); return; }
+  if (!ap.isConnected) return;
+  list.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  $("#plist").innerHTML = `<h3>Podcast caricati (${list.length})</h3>` + (list.length ? list.map((p) => `<div class="card pod">
+      <div class="row"><b class="pod-title">${esc(p.title)}</b><span class="spacer"></span><span class="tag ${p.active ? "on" : "off"}">${p.active ? "Attivo" : "Nascosto"}</span></div>
+      <div class="small muted">${[esc(podTopic(p.topic)), fmtDur(p.duration_sec), p.size_bytes ? fmtMB(p.size_bytes) : "", fmtDay(p.created_at)].filter(Boolean).join(" · ")}</div>
+      ${p.description ? `<p class="small">${esc(p.description)}</p>` : ""}
+      ${p.url ? `<audio controls preload="none" src="${esc(p.url)}"></audio>` : ""}
+      <div class="row end" style="margin-top:10px"><button class="btn secondary" data-edit="${esc(p.id)}">Modifica</button><button class="btn secondary" data-act="${esc(p.id)}">${p.active ? "Nascondi" : "Pubblica"}</button><button class="btn danger" data-del="${esc(p.id)}">Elimina</button></div>
+    </div>`).join("") : `<div class="card empty">Nessun podcast caricato.</div>`);
+  $("#plist").onclick = async (e) => {
+    const b = e.target.closest("button[data-edit],button[data-act],button[data-del]"); if (!b) return;
+    const p = list.find((x) => x.id === (b.dataset.edit || b.dataset.act || b.dataset.del));
+    if (b.dataset.edit) {
+      return dialog(`<h2>Modifica podcast</h2>
+        <label for="et">Titolo</label><input id="et" type="text" required maxlength="200" value="${esc(p.title)}">
+        <label for="eto">Argomento</label><select id="eto">${[...Object.entries(TOPICS), ["generale", "Generale"]].map(([k, v]) => `<option value="${k}" ${p.topic === k ? "selected" : ""}>${esc(v)}</option>`).join("")}${p.topic && !TOPICS[p.topic] && p.topic !== "generale" ? `<option value="${esc(p.topic)}" selected>${esc(p.topic)}</option>` : ""}</select>
+        <label for="ed">Descrizione</label><textarea id="ed" maxlength="2000">${esc(p.description || "")}</textarea>`,
+        async (f) => {
+          try { await podcastApi({ action: "update", pin: S.adminPin, id: p.id, title: $("#et", f).value.trim(), topic: $("#eto", f).value, description: $("#ed", f).value.trim() }); }
+          catch (err) { if (/pin_non_valido/.test(err.message)) { podAdminError(err); return; } throw new Error(errMsg(err)); }
+          toast("Podcast aggiornato"); adminPodcasts(ap);
+        }, { ok: "Salva" });
+    }
+    if (b.dataset.del && !confirm("Eliminare definitivamente il podcast e il file audio?")) return;
+    b.disabled = true;
+    try {
+      if (b.dataset.act) { await podcastApi({ action: "update", pin: S.adminPin, id: p.id, active: !p.active }); toast(p.active ? "Podcast nascosto ai corsisti" : "Podcast pubblicato"); }
+      else { await podcastApi({ action: "delete", pin: S.adminPin, id: p.id }); toast("Podcast eliminato"); }
+      adminPodcasts(ap);
+    } catch (err) { b.disabled = false; podAdminError(err); }
+  };
+}
+
 /* ---------- fonti ---------- */
 function fontiPage() {
   setTitle("Fonti", true);
@@ -699,7 +893,7 @@ async function adminRefresh() { S.admin = await rpc("quiz_admin_list", { p_pin: 
 function adminPanel(tab = "prop") {
   setTitle("Area amministratore", true);
   const A = S.admin;
-  const tabs = { prop: `Proposte (${A.proposals.length})`, rep: `Segnalazioni (${A.reports.length})`, q: "Domande", users: "Corsisti", set: "Impostazioni" };
+  const tabs = { prop: `Proposte (${A.proposals.length})`, rep: `Segnalazioni (${A.reports.length})`, q: "Domande", users: "Corsisti", pod: "Podcast", set: "Impostazioni" };
   view.innerHTML = `<div class="tabs">${Object.entries(tabs).map(([k, v]) => `<button class="chip" data-t="${k}" aria-pressed="${k === tab}">${v}</button>`).join("")}</div><div id="ap"></div>`;
   view.querySelector(".tabs").onclick = (e) => { const b = e.target.closest(".chip"); if (b) adminPanel(b.dataset.t); };
   const cur = view.querySelector('.tabs [aria-pressed="true"]'), tb = cur.parentElement;
@@ -744,6 +938,8 @@ function adminPanel(tab = "prop") {
     draw();
   } else if (tab === "users") {
     adminUsers(ap);
+  } else if (tab === "pod") {
+    adminPodcasts(ap);
   } else {
     ap.innerHTML = `<div class="card"><h2>Codice corso</h2><p class="small muted">Da comunicare ai corsisti. Cambiandolo, chi è già dentro dovrà reinserirlo.</p>
       <div class="row"><input type="text" id="cc" placeholder="Nuovo codice corso" style="flex:1"><button class="btn" id="scc">Salva</button></div></div>

@@ -100,6 +100,12 @@ details.hist .row.end{padding:6px 0 10px}
 .feedback{white-space:pre-wrap;overflow-wrap:anywhere;padding:12px 0;font-size:.95rem}
 .tag.lock{background:var(--ko-bg);color:var(--ko);border-color:transparent}
 input[type=number]{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--text);font:inherit}
+.pod audio{display:block;width:100%;margin-top:10px}
+.pod-title{color:var(--text)}
+.seen{font-size:.8rem;font-weight:700;color:var(--ok);white-space:nowrap}
+.tag.on{background:var(--ok-bg);color:var(--ok);border-color:transparent}
+.tag.off{background:var(--surface2);color:var(--muted)}
+input[type=file]{width:100%;font:inherit}
 .list-item{border-top:1px solid var(--line);padding:12px 0}
 .list-item:first-child{border-top:0}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(120px);background:#222;color:#fff;padding:10px 16px;border-radius:10px;transition:transform .25s;max-width:calc(100% - 32px);z-index:20;pointer-events:none}
