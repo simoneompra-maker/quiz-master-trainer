@@ -73,6 +73,7 @@ const ERRORS = {
   testo_troppo_lungo: "Il testo è troppo lungo.",
   pin_non_valido: "PIN errato.",
   valore_non_valido: "Valore non valido.",
+  modalita_non_valida: "Modalità di quiz non riconosciuta.",
   formato_non_supportato: "Formato audio non supportato: usa MP3, M4A, WAV, OGG, AAC o WEBM.",
   file_troppo_grande: "File oltre 50 MB: convertilo in MP3 e riprova.",
   file_non_caricato: "Il file non risulta caricato: riprova.",
@@ -104,8 +105,11 @@ async function loadQuestions(code) {
 }
 
 /* ---------- navigazione ---------- */
-function go(fn, ...args) { S.stack.push([fn, args]); fn(...args); scrollTo(0, 0); }
-function back() { stopTimer(); S.stack.pop(); const p = S.stack[S.stack.length - 1]; if (p) p[0](...p[1]); else home(); scrollTo(0, 0); }
+// Il quiz a voce registra qui come fermare lettura e microfono quando si cambia schermata.
+let voiceCleanup = null;
+function stopVoice() { const f = voiceCleanup; voiceCleanup = null; f?.(); }
+function go(fn, ...args) { stopVoice(); S.stack.push([fn, args]); fn(...args); scrollTo(0, 0); }
+function back() { stopVoice(); stopTimer(); S.stack.pop(); const p = S.stack[S.stack.length - 1]; if (p) p[0](...p[1]); else home(); scrollTo(0, 0); }
 $("#btnBack").onclick = () => {
   if (S.inProgress && !confirm("Vuoi interrompere? Le risposte date finora restano nelle statistiche.")) return;
   S.inProgress = false; back();
@@ -151,6 +155,7 @@ function topicStats() {
   return out;
 }
 function home() {
+  stopVoice(); stopTimer();
   S.stack = [[home, []]]; S.inProgress = false; setTitle("Quiz Master Trainer", false);
   const ts = topicStats();
   const answered = Object.keys(S.stats).filter((id) => S.questions.some((q) => q.id === id)).length;
@@ -178,6 +183,7 @@ function home() {
     `<div class="row small"><span>${new Date(h.at).toLocaleDateString("it-IT")}</span><span class="spacer"></span><b class="${h.pct >= CFG.passThreshold * 100 ? "pass" : "fail"}">${h.ok}/${h.n} · ${h.pct}%</b></div>`).join("")}</div>` : ""}
   <button class="btn secondary block" id="pods" style="margin-top:12px">🎧 Ascolta i podcast</button>
   <button class="btn secondary block" id="hist" style="margin-top:10px">📈 Storico spiegazioni</button>
+  ${S.token ? `<button class="btn secondary block" id="res" style="margin-top:10px">📊 I miei risultati</button>` : ""}
   <div class="grid2" style="margin-top:10px">
     <button class="btn secondary" id="prop">✍️ Proponi una domanda</button>
     <button class="btn secondary" id="fonti">📚 Fonti</button>
@@ -189,6 +195,7 @@ function home() {
   $("#fonti").onclick = () => go(fontiPage);
   $("#pods").onclick = () => go(podcastPage);
   $("#hist").onclick = () => go(historyPage);
+  if ($("#res")) $("#res").onclick = () => go(resultsPage, "all");
   $("#adm").onclick = () => go(adminLogin);
   $("#chpin").onclick = (e) => { e.preventDefault(); changePin(); };
   if ($("#outh")) $("#outh").onclick = (e) => { e.preventDefault(); leaveHistory(); toast("Sei uscito dallo storico."); home(); };
@@ -205,7 +212,8 @@ function setup(mode) {
   const p = S.prefs; const avail = Object.keys(TOPICS).filter((k) => S.questions.some((q) => q.topic === k));
   const sel = new Set(p.topics.length ? p.topics.filter((t) => avail.includes(t)) : avail);
   const lv = new Set(p.levels);
-  let voice = mode === "train" && p.trainMode === "voice";
+  // modalità di allenamento: quiz | voice (Spiega a voce) | quizvoce (Quiz a voce)
+  let tmode = mode === "train" && ["voice", "quizvoce"].includes(p.trainMode) ? p.trainMode : "quiz";
   view.innerHTML = `
   <div class="card">
     <h2>Argomenti</h2>
@@ -214,7 +222,7 @@ function setup(mode) {
     <h3>Livello</h3>
     <div class="chips" id="lv">${[1, 2, 3].map((l) => `<button class="chip" data-l="${l}" aria-pressed="${lv.has(l)}">${LEVELS[l]}</button>`).join("")}</div>
     ${mode === "train" ? `<h3>Come vuoi allenarti</h3>
-    <div class="grid2" id="tm">${[["quiz", "📝 Rispondi ai quiz"], ["voice", "🎙️ Spiega a voce"]].map(([k, v]) => `<button class="chip" data-tm="${k}" aria-pressed="${voice === (k === "voice")}">${v}</button>`).join("")}</div>` : ""}
+    <div class="tmodes" id="tm">${[["quiz", "📝 Rispondi ai quiz"], ["voice", "🎙️ Spiega a voce"], ["quizvoce", "🎙️ Quiz a voce"]].map(([k, v]) => `<button class="chip" data-tm="${k}" aria-pressed="${tmode === k}">${v}</button>`).join("")}</div>` : ""}
     <div id="ctBox"><h3>Quante domande</h3>
     <div class="chips" id="ct">${[10, 20, 40, 0].map((n) => `<button class="chip" data-n="${n}" aria-pressed="${p.count === n}">${n || "Tutte"}</button>`).join("")}</div></div>
     <p class="small muted" id="avail"></p>
@@ -222,23 +230,26 @@ function setup(mode) {
   </div>`;
   const pool = () => S.questions.filter((q) => sel.has(q.topic) && lv.has(q.level));
   const refresh = () => {
-    $("#ctBox").hidden = voice; $("#go").textContent = voice ? "Dammi un compito" : "Inizia";
+    $("#ctBox").hidden = tmode === "voice"; $("#go").textContent = tmode === "voice" ? "Dammi un compito" : "Inizia";
     $("#avail").textContent = `${pool().length} domande disponibili con questi filtri`; $("#go").disabled = !pool().length;
   };
-  if (mode === "train") $("#tm").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; voice = b.dataset.tm === "voice"; $("#tm").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", c === b)); refresh(); };
+  if (mode === "train") $("#tm").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; tmode = b.dataset.tm; $("#tm").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", c === b)); refresh(); };
   $("#tp").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; const k = b.dataset.k; sel.has(k) ? sel.delete(k) : sel.add(k); b.setAttribute("aria-pressed", sel.has(k)); refresh(); };
   $("#lv").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; const l = +b.dataset.l; lv.has(l) ? lv.delete(l) : lv.add(l); b.setAttribute("aria-pressed", lv.has(l)); refresh(); };
   $("#ct").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; p.count = +b.dataset.n; $("#ct").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", c === b)); };
   $("#all").onclick = () => { avail.forEach((k) => sel.add(k)); $("#tp").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", true)); refresh(); };
   $("#none").onclick = () => { sel.clear(); $("#tp").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", false)); refresh(); };
   $("#go").onclick = () => {
-    S.prefs = { topics: [...sel], levels: [...lv], count: p.count, trainMode: mode === "train" ? (voice ? "voice" : "quiz") : p.trainMode }; store.set("prefs", S.prefs);
-    if (voice) return go(voiceTask, pool(), [...sel]);
+    S.prefs = { ...p, topics: [...sel], levels: [...lv], count: p.count, trainMode: mode === "train" ? tmode : p.trainMode }; store.set("prefs", S.prefs);
+    if (tmode === "voice") return go(voiceTask, pool(), [...sel]);
+    // argomento da salvare nei risultati: "tutti", la chiave se è uno solo, altrimenti l'elenco
+    const keys = [...sel], topic = keys.length === avail.length ? "tutti" : keys.join(",").length <= 60 ? keys.join(",") : "vari";
     // privilegia le domande mai viste o sbagliate
     let list = shuffle(pool()).sort((a, b) => weight(b) - weight(a));
     if (p.count) list = list.slice(0, p.count);
     list = shuffle(list);
-    mode === "train" ? go(runQuiz, { list, mode: "train" }) : go(flash, list, 0, false);
+    if (mode !== "train") return go(flash, list, 0, false);
+    tmode === "quizvoce" ? go(voiceQuizStart, { list, mode: "quiz_voce", topic }) : go(runQuiz, { list, mode: "train", topic });
   };
   refresh();
 }
@@ -381,7 +392,7 @@ function record(q, ok, mode) {
   saveStats();
 }
 function shuffledView(q) {
-  const order = shuffle([0, 1, 2, 3]);
+  const order = shuffle(q.options.map((_, i) => i));
   return { order, options: order.map((i) => q.options[i]), answer: order.indexOf(q.answer) };
 }
 function qHeader(q) {
@@ -428,12 +439,40 @@ function runQuiz(st) {
   };
 }
 function endQuiz(st) {
-  S.inProgress = false; document.onkeydown = null;
-  const pct = Math.round((st.ok / st.list.length) * 100);
-  view.innerHTML = `<div class="card" style="text-align:center"><h2>Fine sessione</h2><div class="big ${pct >= 80 ? "pass" : pct >= 60 ? "" : "fail"}">${pct}%</div><p>${st.ok} risposte giuste su ${st.list.length}</p></div>
+  stopVoice(); S.inProgress = false; document.onkeydown = null;
+  const n = st.answers.length, pct = Math.round((st.ok / n) * 100); // interrotto con "stop": contano le domande affrontate
+  setTitle(st.mode === "quiz_voce" ? "Quiz a voce" : st.mode === "review" ? "Ripasso errori" : "Allenamento", true);
+  view.innerHTML = `<div class="card" style="text-align:center"><h2>${st.stopped ? "Quiz interrotto" : "Fine sessione"}</h2><div class="big ${pct >= 80 ? "pass" : pct >= 60 ? "" : "fail"}">${pct}%</div><p>${st.ok} risposte giuste su ${n}${st.stopped ? ` (${n} di ${st.list.length} domande affrontate)` : ""}</p>
+  <p class="small muted" id="saveNote"></p></div>
   ${wrongList(st)}
   <div class="grid2"><button class="btn secondary" id="h">Torna alla home</button><button class="btn" id="again">Nuova sessione</button></div>`;
   $("#h").onclick = home; $("#again").onclick = () => { S.stack.pop(); const p = S.stack[S.stack.length - 1]; p ? p[0](...p[1]) : home(); };
+  saveResult(st);
+}
+/* ---------- risultati salvati (solo con l'accesso allo storico) ---------- */
+const RESULT_MODES = { train: "quiz", exam: "simulazione", quiz_voce: "quiz_voce", simulazione_voce: "simulazione_voce" };
+async function saveResult(st) {
+  const mode = RESULT_MODES[st.mode], n = st.answers.length;
+  if (!mode || !n || st.saved) return; // ripasso e flashcard non si salvano
+  const note = (html) => { const el = $("#saveNote"); if (el) el.innerHTML = html; };
+  if (!S.token) {
+    note(`Accedi con il tuo PIN per salvare i risultati nello storico. <a href="#" id="saveLogin">Accedi e salva</a>`);
+    $("#saveLogin").onclick = async (e) => { e.preventDefault(); if (await requireToken()) saveResult(st); };
+    return;
+  }
+  note("Salvataggio del risultato…");
+  const exam = mode === "simulazione" || mode === "simulazione_voce";
+  try {
+    await rpc("quiz_result_add", {
+      p_token: S.token, p_mode: mode, p_topic: exam ? "tutti" : st.topic || "tutti", p_total: n, p_correct: st.ok,
+      p_passed: exam ? st.ok / n >= CFG.passThreshold : null,
+      p_wrong_ids: [...new Set(st.answers.filter((a) => !a.ok).map((a) => a.q.id))],
+    });
+    st.saved = true; note(`<span class="saved">✓ Risultato salvato</span> in “I miei risultati”.`);
+  } catch (e) {
+    if (/sessione_non_valida|cambia_pin_prima|uuid/i.test(e.message)) { setToken(null); return saveResult(st); }
+    note(!navigator.onLine || /Failed to fetch|NetworkError|Load failed/i.test(e.message) ? "Risultato non salvato (connessione assente)." : "Risultato non salvato: " + esc(errMsg(e)));
+  }
 }
 function wrongList(st) {
   const w = st.answers.filter((a) => !a.ok);
@@ -454,13 +493,20 @@ function examIntro() {
     <p>${CFG.examQuestions} domande casuali da tutti gli argomenti, solo domande verificate.</p>
     <p>Hai <b>${CFG.examMinutes} minuti</b>. Le soluzioni compaiono alla fine.</p>
     <p>Per superarla serve almeno <b>${Math.round(CFG.passThreshold * 10)}/10</b>, cioè l'${Math.round(CFG.passThreshold * 100)}%, come per il test finale del Tecnico di 3° livello (Regolamento generale, art. 16).</p>
+    <h3>Come vuoi farla</h3>
+    <div class="tmodes" id="em">${[["", "📝 Normale"], ["voice", "🎙️ A voce"]].map(([k, v]) => `<button class="chip" data-em="${k}" aria-pressed="${!!S.prefs.examVoice === !!k}">${v}</button>`).join("")}</div>
     <button class="btn block" id="go" style="margin-top:12px">Inizia la simulazione</button></div>`;
+  let examVoice = !!S.prefs.examVoice;
+  $("#em").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; examVoice = !!b.dataset.em; $("#em").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", c === b)); };
   $("#go").onclick = () => {
+    S.prefs = { ...S.prefs, examVoice }; store.set("prefs", S.prefs);
     // un po' di tutto: estrazione bilanciata per argomento
     const byT = {}; shuffle(pool).forEach((q) => (byT[q.topic] ||= []).push(q));
     const list = []; const keys = shuffle(Object.keys(byT));
     while (list.length < Math.min(CFG.examQuestions, pool.length)) for (const k of keys) { if (byT[k].length && list.length < CFG.examQuestions) list.push(byT[k].pop()); }
-    S.stack.pop(); go(runQuiz, { list: shuffle(list), mode: "exam", end: Date.now() + CFG.examMinutes * 60000 });
+    S.stack.pop();
+    if (examVoice) return go(voiceQuizStart, { list: shuffle(list), mode: "simulazione_voce", topic: "tutti" }); // il tempo parte da "Inizia"
+    go(runQuiz, { list: shuffle(list), mode: "exam", topic: "tutti", end: Date.now() + CFG.examMinutes * 60000 });
   };
 }
 function tick(st) {
@@ -473,17 +519,20 @@ function tick(st) {
   draw(); timerH = setInterval(draw, 1000);
 }
 function examResult(st) {
-  stopTimer(); S.inProgress = false;
-  const n = st.list.length, pct = Math.round((st.ok / n) * 100), pass = st.ok / n >= CFG.passThreshold;
+  stopVoice(); stopTimer(); S.inProgress = false;
+  setTitle(st.mode === "simulazione_voce" ? "Simulazione a voce" : "Simulazione esame", true);
+  const n = st.answers.length, pct = Math.round((st.ok / n) * 100), pass = st.ok / n >= CFG.passThreshold;
   S.history.push({ at: Date.now(), n, ok: st.ok, pct }); store.set("history", S.history.slice(-50));
   const byT = {}; st.answers.forEach((a) => { const t = (byT[a.q.topic] ||= { n: 0, ok: 0 }); t.n++; if (a.ok) t.ok++; });
   view.innerHTML = `<div class="card" style="text-align:center"><h2>${pass ? "🎉 Superata!" : "Non ancora superata"}</h2>
-    <div class="big ${pass ? "pass" : "fail"}">${st.ok}/${n}</div><p>${pct}% · voto ${(st.ok / n * 10).toFixed(1)}/10 · soglia ${Math.round(CFG.passThreshold * 10)}/10</p></div>
+    <div class="big ${pass ? "pass" : "fail"}">${st.ok}/${n}</div><p>${pct}% · voto ${(st.ok / n * 10).toFixed(1)}/10 · soglia ${Math.round(CFG.passThreshold * 10)}/10</p>
+    ${st.stopped ? `<p class="small muted">Interrotta: ${n} di ${st.list.length} domande affrontate.</p>` : ""}<p class="small muted" id="saveNote"></p></div>
     <h3>Per argomento</h3><div class="card">${Object.entries(byT).sort((a, b) => a[1].ok / a[1].n - b[1].ok / b[1].n).map(([k, t]) =>
       `<div class="row small"><span>${esc(TOPICS[k] || k)}</span><span class="spacer"></span><b>${t.ok}/${t.n}</b></div>`).join("")}</div>
     ${wrongList(st)}
     <div class="grid2"><button class="btn secondary" id="h">Torna alla home</button><button class="btn" id="again">Nuova simulazione</button></div>`;
   $("#h").onclick = home; $("#again").onclick = () => { S.stack = [[home, []]]; go(examIntro); };
+  saveResult(st);
 }
 
 /* ---------- ripasso errori ---------- */
@@ -491,6 +540,268 @@ function startReview() {
   const list = shuffle(S.questions.filter((q) => S.stats[q.id]?.open));
   if (!list.length) { setTitle("Ripasso errori", true); view.innerHTML = `<div class="card empty">🎉 Nessun errore da ripassare.<br>Una domanda sbagliata esce dal ripasso dopo 2 risposte giuste di fila.</div>`; return; }
   runQuiz({ list, mode: "review" });
+}
+
+/* ---------- quiz a voce ---------- */
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+const hasTTS = () => "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+const NUM_WORDS = ["uno", "due", "tre", "quattro", "cinque", "sei"];
+const VOICE_NUMS = [
+  ["uno", "1", "prima", "primo", "a"], ["due", "2", "seconda", "secondo", "b", "bi"], ["tre", "3", "terza", "terzo", "c", "ci"],
+  ["quattro", "4", "quarta", "quarto", "d", "di"], ["cinque", "5", "quinta", "quinto", "e"], ["sei", "6", "sesta", "sesto", "f", "effe"],
+];
+const VOICE_LETTERS = new Set(["a", "b", "bi", "c", "ci", "d", "di", "e", "f", "effe"]);
+const VOICE_STOPWORDS = new Set("della delle degli dello dalla dalle dagli sono come anche quando quale quali questo questa quello quella perche sempre molto nella nelle negli tutti tutte essere".split(" "));
+const VOICE_RATES = [["Lenta", 0.85], ["Normale", 1], ["Veloce", 1.2]];
+const voicePrefs = () => ({ rate: 1, readOpts: true, readExpl: true, ...store.get("voiceprefs", {}) });
+const normVoice = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+
+// Interpreta una frase detta: {answer: indice} | {cmd: "repeat"|"skip"|"stop"|"pause"|"next"} | null se non capita.
+function parseVoice(text, options, phase) {
+  const w = normVoice(text).split(" ").filter(Boolean);
+  if (!w.length) return null;
+  const has = (...k) => w.some((x) => k.includes(x)), short = w.length <= 4;
+  if (phase === "confirm" && has("avanti", "prossima", "vai", "successiva", "continua")) return { cmd: "next" };
+  if (short && has("ripeti", "ripetere", "ripetimi", "rileggi")) return { cmd: "repeat" };
+  if (short && has("stop", "basta", "fine", "termina")) return { cmd: "stop" };
+  if (short && has("pausa")) return { cmd: "pause" };
+  if (phase !== "answer") return null;
+  if (short && has("salta", "passo", "saltala")) return { cmd: "skip" };
+  const byNumber = () => {
+    const found = new Set();
+    w.forEach((x, i) => VOICE_NUMS.forEach((alts, n) => {
+      if (n >= options.length || !alts.includes(x)) return;
+      if (x === "secondo" && ["me", "te", "noi", "voi", "lui", "lei"].includes(w[i + 1])) return; // «secondo me…» non è la risposta 2
+      // le lettere ("a", "di", "ci"…) sono anche parole comuni: valgono solo in frasi brevi o dopo "risposta"/"lettera"
+      if (VOICE_LETTERS.has(x) && !(w.length <= 2 || ["risposta", "lettera"].includes(w[i - 1]) || (w[i - 1] === "la" && w.length <= 3))) return;
+      found.add(n);
+    }));
+    return found.size === 1 ? { answer: [...found][0] } : null;
+  };
+  const byText = () => {
+    const sig = w.filter((x) => x.length >= 4 && !VOICE_STOPWORDS.has(x));
+    if (!sig.length) return null;
+    const sets = options.map((o) => new Set(normVoice(o).split(" ")));
+    // parole dette che compaiono in una sola opzione
+    const scores = sets.map((s, i) => sig.filter((x) => s.has(x) && sets.every((o, j) => j === i || !o.has(x))).length);
+    const best = Math.max(...scores), i = scores.indexOf(best);
+    if (!best || scores.filter((s) => s === best).length > 1) return null;
+    const optSig = [...sets[i]].filter((x) => x.length >= 4 && !VOICE_STOPWORDS.has(x)).length;
+    return best >= 2 || optSig <= 2 ? { answer: i } : null;
+  };
+  // frase lunga: prima il testo delle opzioni (può contenere numeri), poi il numero; frase breve: il contrario
+  return w.length > 4 ? byText() || byNumber() : byNumber() || byText();
+}
+
+function voiceQuizStart(st) {
+  const exam = st.mode === "simulazione_voce", P = voicePrefs();
+  setTitle(exam ? "Simulazione a voce" : "Quiz a voce", true); stopTimer();
+  const chips = (id, items, cur) => `<div class="chips" id="${id}">${items.map(([l, v]) => `<button class="chip" data-v="${v}" aria-pressed="${cur === v}">${l}</button>`).join("")}</div>`;
+  view.innerHTML = `<div class="card">
+    <h2>🎙️ ${exam ? "Simulazione a voce" : "Quiz a voce"}</h2>
+    <p>${st.list.length} domande${exam ? ` · ${CFG.examMinutes} minuti · soglia ${Math.round(CFG.passThreshold * 10)}/10, correzioni alla fine` : ""}.</p>
+    <p class="small muted">Ascolta la domanda e rispondi dicendo il numero (es. «la due», «risposta tre») oppure tocca la risposta. Comandi: «ripeti», «salta», «pausa», «stop». Dopo ogni risposta di' «avanti» o tocca <b>Avanti ▶</b>.</p>
+    ${!SpeechRec ? `<p class="vnote">Il riconoscimento vocale non è disponibile su questo browser: le domande vengono lette, rispondi toccando.</p>` : ""}
+    ${!hasTTS() ? `<p class="vnote">La lettura vocale non è disponibile su questo browser: leggi le domande sullo schermo${SpeechRec ? " e rispondi a voce o toccando" : ""}.</p>` : ""}
+    <h3>Velocità lettura</h3>${chips("vrate", VOICE_RATES, P.rate)}
+    <h3>Leggi le risposte</h3>${chips("vopts", [["Sì", "1"], ["No", ""]], P.readOpts ? "1" : "")}
+    ${exam ? "" : `<h3>Dopo un errore leggi la spiegazione</h3>${chips("vexpl", [["Sì", "1"], ["No", ""]], P.readExpl ? "1" : "")}`}
+    <button class="btn block big-btn" id="vstart" style="margin-top:16px">▶ Inizia ${exam ? "simulazione" : "quiz"} a voce</button>
+  </div>`;
+  const bind = (id, key, conv) => {
+    const el = $("#" + id); if (!el) return;
+    el.onclick = (e) => {
+      const b = e.target.closest(".chip"); if (!b) return;
+      store.set("voiceprefs", { ...voicePrefs(), [key]: conv(b.dataset.v) });
+      el.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", c === b));
+    };
+  };
+  bind("vrate", "rate", Number); bind("vopts", "readOpts", Boolean); bind("vexpl", "readExpl", Boolean);
+  // il primo avvio deve partire da un tocco: è questo che permette lettura e microfono
+  $("#vstart").onclick = () => {
+    if (hasTTS()) { try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance("")); } catch {} }
+    if (exam) st.end = Date.now() + CFG.examMinutes * 60000;
+    voiceQuiz(st);
+  };
+}
+
+function voiceQuiz(st) {
+  const exam = st.mode === "simulazione_voce", P = voicePrefs(), tts = hasTTS() ? speechSynthesis : null;
+  st.i ??= 0; st.ok ??= 0; st.answers ??= [];
+  S.inProgress = true;
+  let gen = 0;          // ogni cambio di fase invalida letture e ascolti in corso
+  let rec = null, paused = false, phase = "answer", fails = 0, micQ = false, q = null, v = null, last = null, confirmTries = 0;
+  let micOff = !SpeechRec, micNote = ""; // permesso negato o rete assente: solo ascolto per il resto di questo quiz
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const status = (txt, cls = "") => { const el = $("#vs"); if (el) { el.textContent = txt; el.className = "vstatus " + cls; } };
+  const stopMedia = () => {
+    gen++;
+    try { tts?.cancel(); } catch {}
+    if (rec) { const r = rec; rec = null; try { r.abort(); } catch {} }
+  };
+  const onVis = () => { if (document.hidden && !paused) pause(); };
+  document.addEventListener("visibilitychange", onVis);
+  voiceCleanup = () => { stopMedia(); document.removeEventListener("visibilitychange", onVis); clearInterval(timerH); };
+
+  // Lettura frase per frase: Chrome interrompe le letture troppo lunghe.
+  const speakOne = (text) => new Promise((res) => {
+    if (!tts || !text) return res();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "it-IT"; u.rate = P.rate;
+    const it = tts.getVoices().filter((x) => /^it\b|^it[-_]/i.test(x.lang));
+    if (it.length) u.voice = it.find((x) => x.localService) || it[0];
+    let done = false; const fin = () => { if (!done) { done = true; res(); } };
+    u.onend = fin; u.onerror = fin;
+    setTimeout(fin, 3000 + (text.length * 120) / P.rate); // se il browser non segnala la fine
+    tts.speak(u);
+  });
+  const say = async (parts, g) => { for (const p of parts) { if (g !== gen) return; await speakOne(p); } };
+
+  const disableMic = (kind) => {
+    micOff = true;
+    micNote = kind === "perm"
+      ? "Microfono bloccato. Per rispondere a voce consentilo: tocca il lucchetto accanto all'indirizzo (oppure Impostazioni del browser → Impostazioni sito → Microfono), scegli Consenti e ricarica la pagina. Intanto rispondi toccando."
+      : "Serve internet per rispondere a voce: intanto le domande vengono lette, rispondi toccando.";
+    if ($("#vnote")) $("#vnote").innerHTML = `<p class="vnote">${esc(micNote)}</p>`;
+    toast(kind === "perm" ? "Microfono non consentito" : "Serve internet per rispondere a voce");
+  };
+  // Una frase dal microfono: {alts: [...]} | {err} | {off: true}
+  const listen = (g) => new Promise((res) => {
+    if (micOff || micQ || g !== gen) return res({ off: true });
+    const r = new SpeechRec(); rec = r;
+    r.lang = "it-IT"; r.interimResults = false; r.continuous = false; r.maxAlternatives = 3;
+    let alts = null, err = null;
+    r.onresult = (e) => { alts = [...e.results[0]].map((a) => a.transcript); };
+    r.onerror = (e) => { err = e.error; };
+    r.onend = () => { if (rec === r) rec = null; res({ alts, err }); };
+    try { r.start(); if (g === gen) status("🎙️ Ti ascolto…", "listen"); } catch { rec = null; res({ err: "start" }); }
+  });
+  // Ascolta finché non arriva qualcosa di utile per la fase corrente.
+  async function listenLoop(g) {
+    while (g === gen && !paused) {
+      const r = await listen(g);
+      if (g !== gen) return;
+      if (r.off) { status(phase === "answer" ? "Tocca la risposta sullo schermo" : "Tocca Avanti ▶ per continuare"); return; }
+      if (r.err === "not-allowed" || r.err === "service-not-allowed") { disableMic("perm"); status("Tocca la risposta sullo schermo"); return; }
+      if (r.err === "network") { disableMic("net"); status("Tocca la risposta sullo schermo"); return; }
+      if (r.err === "aborted") return;
+      const opts = phase === "answer" ? v.options : last.v.options;
+      const hit = (r.alts || []).map((a) => parseVoice(a, opts, phase)).find(Boolean);
+      if (hit) return handle(hit);
+      if (phase === "confirm") { // in attesa di «avanti»: niente rimproveri, si riascolta qualche volta
+        if (++confirmTries >= 3) { status("Tocca Avanti ▶ per continuare"); return; }
+        continue;
+      }
+      if (++fails >= 2) { micQ = true; status("Tocca la risposta sullo schermo"); await say(["Tocca la risposta sullo schermo."], g); return; }
+      status("Non ho capito");
+      await say(["Non ho capito, dimmi il numero della risposta."], g);
+      if (g !== gen) return; await wait(300);
+    }
+  }
+  function handle(h) {
+    if (h.cmd === "repeat") return phase === "answer" ? readQuestion() : readFeedback();
+    if (h.cmd === "stop") return finish(true);
+    if (h.cmd === "pause") return pause();
+    if (h.cmd === "next") return next();
+    if (h.cmd === "skip") return answer(null);
+    if (h.answer != null) return answer(h.answer);
+  }
+
+  function render() {
+    const cur = phase === "answer" ? { q, v } : last;
+    const n = st.list.length, idx = phase === "answer" ? st.i : st.i - 1;
+    view.innerHTML = `
+    <div class="progress"><span>Domanda ${idx + 1} di ${n}</span>${exam ? `<span class="timer" id="tm"></span>` : `<span>✔ ${st.ok}</span>`}</div>
+    <div class="bar neutral" style="margin-bottom:10px"><i style="width:${(st.i / n) * 100}%"></i></div>
+    <div class="vstatus" id="vs" aria-live="polite"></div><div id="vnote">${micNote ? `<p class="vnote">${esc(micNote)}</p>` : ""}</div>
+    <div class="card">
+      ${qHeader(cur.q)}
+      <div class="question">${esc(cur.q.question)}</div>
+      <div class="opts">${cur.v.options.map((o, i) => `<button class="opt" data-i="${i}" ${phase !== "answer" ? "disabled" : ""}><span class="k">${i + 1}</span><span>${esc(o)}</span></button>`).join("")}</div>
+      <div id="fb"></div>
+      ${phase === "confirm" ? `<button class="btn block big-btn" id="vnext" style="margin-top:14px">${st.i < n ? "Avanti ▶" : exam ? "Vedi il risultato ▶" : "Vedi il riepilogo ▶"}</button>` : ""}
+    </div>
+    <div class="vctrl">
+      <button class="btn" id="vpause">${paused ? "▶ Riprendi" : "⏸ Pausa"}</button>
+      <button class="btn secondary" id="vrep">🔁 Ripeti</button>
+      <button class="btn secondary" id="vexit">✖ Esci</button>
+    </div>`;
+    if (exam) tick(st);
+    view.querySelectorAll(".opt").forEach((b) => (b.onclick = () => answer(+b.dataset.i)));
+    $("#vpause").onclick = () => (paused ? resume() : pause());
+    $("#vrep").onclick = () => { if (paused) { paused = false; } phase === "answer" ? readQuestion() : readFeedback(); $("#vpause").textContent = "⏸ Pausa"; };
+    $("#vexit").onclick = () => {
+      if (!confirm("Uscire dal quiz a voce? Le risposte date finora restano nelle statistiche ma il risultato non viene salvato.")) return;
+      stopMedia(); S.inProgress = false; back();
+    };
+    if ($("#vnext")) $("#vnext").onclick = next;
+    if (phase === "confirm") showFeedback();
+  }
+  function showQuestion() {
+    if (st.i >= st.list.length) return finish(false);
+    q = st.list[st.i]; v = shuffledView(q); phase = "answer"; fails = 0; micQ = false;
+    render(); scrollTo(0, 0); readQuestion();
+  }
+  function readQuestion() {
+    stopMedia(); const g = gen; if (paused) return;
+    const parts = [`Domanda ${st.i + 1}.`, q.question];
+    if (P.readOpts) v.options.forEach((o, i) => parts.push(`Risposta ${NUM_WORDS[i]}: ${o}.`));
+    status(tts ? "🔊 Lettura…" : "");
+    // il microfono parte solo dopo la fine della lettura (+300 ms), così non sente la voce del telefono
+    say(parts, g).then(() => g === gen && wait(300)).then(() => g === gen && listenLoop(g));
+  }
+  function answer(i) {
+    if (phase !== "answer") return;
+    stopMedia(); paused = false; // toccare una risposta in pausa fa ripartire
+    const ok = i != null && i === v.answer;
+    if (ok) st.ok++;
+    st.answers.push({ q, chosen: i == null ? null : v.order[i], ok });
+    record(q, ok, st.mode);
+    last = { q, v, i, ok }; st.i++; phase = "confirm"; confirmTries = 0;
+    render();
+    readFeedback();
+  }
+  function feedbackText() {
+    const { q: lq, v: lv, i, ok } = last, right = `la ${NUM_WORDS[lv.answer]}: ${lv.options[lv.answer]}`;
+    if (exam) return { title: i == null ? "Domanda saltata." : "Risposta registrata.", speak: [i == null ? "Domanda saltata." : "Risposta registrata."] };
+    if (ok) return { title: "✅ Esatto!", speak: ["Esatto!"] };
+    const head = i == null ? `Domanda saltata. La risposta giusta è ${right}.` : `Sbagliato. La risposta giusta è ${right}.`;
+    return { title: (i == null ? "⏭ " : "❌ ") + head, speak: [head, ...(P.readExpl && lq.explanation ? [lq.explanation] : [])] };
+  }
+  function showFeedback() {
+    const { q: lq, v: lv, i, ok } = last, f = feedbackText();
+    view.querySelectorAll(".opt").forEach((b) => {
+      const bi = +b.dataset.i;
+      if (exam) { if (bi === i) b.classList.add("sel"); return; }
+      if (bi === lv.answer) b.classList.add("right"); else if (bi === i) b.classList.add("wrong");
+    });
+    $("#fb").innerHTML = exam ? `<div class="explain"><div class="verdict" style="color:var(--text)">${esc(f.title)}</div></div>`
+      : `<div class="explain ${ok ? "" : "ko"}"><div class="verdict">${esc(f.title)}</div>${esc(lq.explanation)}<div class="src">📖 ${esc(lq.source)}</div></div>`;
+  }
+  function readFeedback() {
+    stopMedia(); const g = gen; if (paused) return;
+    status(tts ? "🔊 Lettura…" : "");
+    say(feedbackText().speak, g).then(() => g === gen && wait(300)).then(() => g === gen && listenLoop(g));
+  }
+  function next() { if (phase !== "confirm") return; stopMedia(); showQuestion(); }
+  function pause() {
+    paused = true; stopMedia(); status("⏸ In pausa");
+    if ($("#vpause")) $("#vpause").textContent = "▶ Riprendi";
+  }
+  function resume() {
+    paused = false; if ($("#vpause")) $("#vpause").textContent = "⏸ Pausa";
+    if (phase === "answer") readQuestion();
+    else { stopMedia(); const g = gen; confirmTries = 0; listenLoop(g); if (micOff) status("Tocca Avanti ▶ per continuare"); }
+  }
+  function finish(stopped) {
+    stopMedia();
+    if (stopped && !st.answers.length) { S.inProgress = false; toast("Quiz interrotto"); return back(); }
+    st.stopped = stopped;
+    exam ? examResult(st) : endQuiz(st);
+  }
+  // si riparte dalla domanda non ancora risposta (o dalla prima)
+  showQuestion();
 }
 
 /* ---------- flashcard ---------- */
@@ -690,6 +1001,63 @@ async function historyPage() {
     try { await userRpc("quiz_feedback_delete", { p_id: id }); toast("Prova eliminata"); historyPage(); }
     catch (err) { if (err.message !== CANCELLED) toast(err.message); }
   };
+}
+
+/* ---------- i miei risultati ---------- */
+const RES_LABEL = { quiz: "📝 Quiz", simulazione: "⏱️ Simulazione", quiz_voce: "🎙️ Quiz a voce", simulazione_voce: "🎙️ Simulazione a voce" };
+const resTopic = (t) => (!t || t === "tutti" ? "Tutti gli argomenti" : t === "vari" ? "Più argomenti" : t.split(",").map((k) => TOPICS[k] || k).join(", "));
+const fmtPct = (n) => Math.round(+n) + "%";
+async function resultsPage(filter = "all") {
+  setTitle("I miei risultati", true);
+  if (!navigator.onLine) { view.innerHTML = `<div class="card empty">📡 I risultati richiedono la connessione.</div>`; return; }
+  view.innerHTML = `<div class="card empty">Caricamento…</div>`;
+  let list;
+  try { list = await userRpc("quiz_result_list"); }
+  catch (e) {
+    if (S.stack[S.stack.length - 1]?.[0] !== resultsPage) return;
+    if (e.message === CANCELLED) return back();
+    view.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return;
+  }
+  if (S.stack[S.stack.length - 1]?.[0] !== resultsPage) return;
+  S.stack[S.stack.length - 1][1] = [filter];
+  const draw = () => {
+    const shown = list.filter((r) => filter === "all" || r.mode === filter);
+    const avg = shown.length ? shown.reduce((a, r) => a + +r.score, 0) / shown.length : null;
+    const best = shown.reduce((b, r) => (!b || +r.score > +b.score ? r : b), null);
+    view.innerHTML = `
+      <div class="chips" id="rf">${[["all", "Tutte"], ...Object.entries(RES_LABEL)].map(([k, v]) => `<button class="chip" data-f="${k}" aria-pressed="${filter === k}">${k === "all" ? v : v.replace(/^\S+ /, "")}</button>`).join("")}</div>
+      <div class="card" style="margin-top:12px"><div class="stats res-stats">
+        <div><div class="big">${shown.length}</div><div class="small muted">${shown.length === 1 ? "prova" : "prove"}</div></div>
+        <div><div class="big">${avg == null ? "–" : fmtPct(avg)}</div><div class="small muted">media</div></div>
+        <div><div class="big pass">${best ? fmtPct(best.score) : "–"}</div><div class="small muted">miglior risultato</div></div></div></div>
+      ${shown.length ? `<div id="rl">${shown.map((r) => {
+        const sim = r.mode === "simulazione" || r.mode === "simulazione_voce", wrong = Array.isArray(r.wrong_ids) ? r.wrong_ids.length : 0;
+        return `<div class="card res">
+          <div class="row"><span class="small muted">${new Date(r.created_at).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span><span class="spacer"></span>
+            ${sim && r.passed != null ? `<span class="tag ${r.passed ? "on" : "lock"}">${r.passed ? "Promosso" : "Non promosso"}</span>` : ""}</div>
+          <div class="row" style="margin-top:4px"><b class="res-mode">${RES_LABEL[r.mode] || esc(r.mode)}</b><span class="spacer"></span><b class="${+r.score >= 80 ? "pass" : +r.score >= 60 ? "mid" : "fail"}">${fmtPct(r.score)}</b></div>
+          <div class="small muted">${esc(resTopic(r.topic))} · ${r.correct}/${r.total} corrette</div>
+          <div class="row end" style="margin-top:8px">${wrong ? `<button class="btn secondary" data-rev="${esc(r.id)}">🔁 Ripassa gli errori (${wrong})</button>` : ""}<button class="btn ghost" data-del="${esc(r.id)}">🗑 Elimina</button></div>
+        </div>`;
+      }).join("")}</div>` : `<div class="card empty">${list.length ? "Nessun risultato con questo filtro." : "Nessun risultato salvato.<br>Finisci un quiz o una simulazione: il risultato arriva qui."}</div>`}`;
+    $("#rf").onclick = (e) => { const b = e.target.closest(".chip"); if (!b) return; filter = b.dataset.f; S.stack[S.stack.length - 1][1] = [filter]; draw(); };
+    if ($("#rl")) $("#rl").onclick = async (e) => {
+      const rev = e.target.closest("[data-rev]")?.dataset.rev, del = e.target.closest("[data-del]")?.dataset.del;
+      if (rev) {
+        const r = list.find((x) => x.id === rev), ids = new Set(r.wrong_ids);
+        const qs = S.questions.filter((q) => ids.has(q.id)); // solo le domande ancora attive
+        if (!qs.length) return toast("Le domande sbagliate non sono più disponibili.");
+        if (qs.length < ids.size) toast(`${ids.size - qs.length} domande non sono più disponibili: ripassi le altre ${qs.length}.`);
+        return go(runQuiz, { list: shuffle(qs), mode: "train", topic: r.mode.startsWith("simulazione") ? "tutti" : r.topic });
+      }
+      if (del) {
+        if (!confirm("Eliminare questo risultato?")) return;
+        try { await userRpc("quiz_result_delete", { p_id: del }); list = list.filter((x) => x.id !== del); toast("Risultato eliminato"); draw(); }
+        catch (err) { if (err.message !== CANCELLED) toast(err.message); }
+      }
+    };
+  };
+  draw();
 }
 
 /* ---------- podcast ---------- */

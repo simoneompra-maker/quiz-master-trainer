@@ -78,7 +78,19 @@ textarea{min-height:80px;resize:vertical}
 .flash .face-label{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px}
 .face-label{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px}
 .task{font-size:1.3rem;font-weight:700;line-height:1.35;margin:4px 0 16px}
-#tm .chip{padding:12px;font-weight:600}
+.tmodes{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.tmodes .chip{padding:12px;font-weight:600}
+.big-btn{font-size:1.1rem;min-height:56px}
+.vstatus{min-height:1.6em;margin:0 0 8px;font-weight:600;color:var(--muted)}
+.vstatus.listen{color:var(--red)}
+.vstatus.listen::before{content:"";display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--red);margin-right:8px;animation:vpulse 1s infinite}
+@keyframes vpulse{50%{opacity:.25}}
+.vnote{background:var(--warn-bg);color:var(--text);border-radius:10px;padding:10px 12px;font-size:.9rem}
+.vctrl{position:sticky;bottom:0;z-index:4;display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:8px;background:var(--bg);padding:10px 0 calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line)}
+.vctrl .btn{padding:12px 8px}
+.res-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.res-stats .big{font-size:1.9rem}
+.res-mode{color:var(--text)}
 .fonti{width:100%;border-collapse:collapse;font-size:.95rem}
 .fonti th{text-align:left;color:var(--red);border-bottom:2px solid var(--text);padding:8px 6px}
 .fonti td{border-bottom:1px solid var(--line);padding:10px 6px;vertical-align:top}
