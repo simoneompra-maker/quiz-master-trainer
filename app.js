@@ -1,6 +1,14 @@
 /* Quiz Master Trainer — PWA senza dipendenze. */
 "use strict";
 const CFG = window.QUIZ_CONFIG;
+// Novità mostrate una volta in home dopo l'aggiornamento: aggiungere qui una voce per ogni nuova versione.
+const NOVITA = {
+  "1.5.0": [
+    "Si entra con il PIN personale: protegge i tuoi risultati, nessuno può usare il tuo nome.",
+    "L'app si aggiorna da sola quando la apri.",
+  ],
+  "1.4.0": ["🎙️ Quiz a voce e Simulazione a voce.", "📊 I miei risultati: lo storico di quiz e simulazioni."],
+};
 // Documenti su cui si basano le domande: aggiornare qui quando esce una nuova versione.
 const FONTI = [
   ["Manuale tecnico 2025", "rev. giugno 2025"],
@@ -65,7 +73,7 @@ async function rpc(fn, args) {
 // Messaggi comprensibili per gli errori che arrivano dal database.
 const ERRORS = {
   codice_non_valido: "Il codice corso è cambiato: esci e rientra con quello nuovo.",
-  sessione_non_valida: "Accesso allo storico scaduto: inserisci di nuovo il PIN.",
+  sessione_non_valida: "Accesso scaduto: inserisci di nuovo il PIN.",
   pin_formato: "Il PIN deve avere da 4 a 8 cifre.",
   pin_uguale_iniziale: "Il PIN personale deve essere diverso dal PIN iniziale.",
   cambia_pin_prima: "Prima scegli il tuo PIN personale.",
@@ -156,6 +164,8 @@ function topicStats() {
 }
 function home() {
   stopVoice(); stopTimer();
+  if (S.reloadPending) return location.reload(); // nuova versione scaricata mentre era in corso un quiz
+  if (!S.token && navigator.onLine) return pinGate(); // PIN obbligatorio (senza rete si continua e lo si chiede dopo)
   S.stack = [[home, []]]; S.inProgress = false; setTitle("Quiz Master Trainer", false);
   const ts = topicStats();
   const answered = Object.keys(S.stats).filter((id) => S.questions.some((q) => q.id === id)).length;
@@ -167,6 +177,9 @@ function home() {
     <div class="row"><div><b>Ciao ${esc(S.user.name)}</b><div class="small muted">${answered}/${tot} domande viste · ${allAns ? Math.round((allOk / allAns) * 100) : 0}% risposte giuste</div></div>
     <span class="spacer"></span><button class="btn ghost" id="sync" title="Aggiorna domande">⟳ Aggiorna</button></div>
   </div>
+  ${S.updatedFrom && NOVITA[CFG.appVersion] ? `<div class="card news" id="news"><b>✨ App aggiornata alla versione ${esc(CFG.appVersion)}</b>
+    <ul>${NOVITA[CFG.appVersion].map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+    <div class="row end"><button class="btn secondary" id="newsOk">Ho capito</button></div></div>` : ""}
   <div class="grid2">
     <button class="mode" data-m="train"><b>🎯 Allenamento</b><span>Scegli argomenti e livello, spiegazione dopo ogni risposta</span></button>
     <button class="mode" data-m="exam"><b>⏱️ Simulazione esame</b><span>${CFG.examQuestions} domande in ${CFG.examMinutes} minuti, si supera con 8/10</span></button>
@@ -189,17 +202,17 @@ function home() {
     <button class="btn secondary" id="fonti">📚 Fonti</button>
   </div>
   <button class="btn secondary block" id="adm" style="margin-top:10px">🔐 Area amministratore</button>
-  <p class="small muted" style="text-align:center;margin-top:16px">v${CFG.appVersion} · <a href="#" id="chpin" class="muted">Cambia PIN</a>${S.token ? ` · <a href="#" id="outh" class="muted">Esci dallo storico</a>` : ""} · <a href="#" id="logout" class="muted">Esci</a></p>`;
+  <p class="small muted" style="text-align:center;margin-top:16px">v${CFG.appVersion} · <a href="#" id="chpin" class="muted">Cambia PIN</a> · <a href="#" id="logout" class="muted">Esci</a></p>`;
   view.querySelectorAll(".mode").forEach((b) => (b.onclick = () => ({ train: () => go(setup, "train"), exam: () => go(examIntro), review: () => go(startReview), flash: () => go(setup, "flash") }[b.dataset.m]())));
   $("#prop").onclick = () => go(proposeForm);
+  if ($("#newsOk")) $("#newsOk").onclick = () => { S.updatedFrom = null; $("#news").remove(); };
   $("#fonti").onclick = () => go(fontiPage);
   $("#pods").onclick = () => go(podcastPage);
   $("#hist").onclick = () => go(historyPage);
   if ($("#res")) $("#res").onclick = () => go(resultsPage, "all");
   $("#adm").onclick = () => go(adminLogin);
   $("#chpin").onclick = (e) => { e.preventDefault(); changePin(); };
-  if ($("#outh")) $("#outh").onclick = (e) => { e.preventDefault(); leaveHistory(); toast("Sei uscito dallo storico."); home(); };
-  $("#logout").onclick = (e) => { e.preventDefault(); if (confirm("Uscire? Le tue statistiche restano su questo dispositivo.")) { leaveHistory(); S.user = null; store.del("user"); login(); } };
+  $("#logout").onclick = (e) => { e.preventDefault(); if (confirm("Uscire? Le tue statistiche restano su questo dispositivo.")) { leaveHistory(); S.user = null; S.updatedFrom = null; store.del("user"); login(); } };
   $("#sync").onclick = async () => {
     try { await loadQuestions(S.user.code); toast(`Domande aggiornate: ${S.questions.length}`); home(); }
     catch (e) { toast(/codice_non_valido/.test(e.message) ? "Il codice corso è cambiato: rientra." : "Sei offline: uso le domande salvate."); if (/codice_non_valido/.test(e.message)) login(); }
@@ -856,12 +869,12 @@ const CANCELLED = "annullato";
 const setToken = (t) => { S.token = t; t ? store.set("token", t) : store.del("token"); };
 const pinField = (id, label, auto) => `<label for="${id}">${label}</label><input id="${id}" type="password" inputmode="numeric" autocomplete="${auto}" required maxlength="8">`;
 function pinLoginDialog(resolve) {
-  dialog(`<h2>Accesso allo storico</h2>
+  dialog(`<h2>Accesso con PIN</h2>
     <p class="small muted">Accedi come <b>${esc(S.user.name)}</b>. Primo accesso? Usa il PIN iniziale ricevuto dall'amministratore, poi sceglierai il tuo.</p>
     ${pinField("upin", "PIN", "current-password")}
     <p class="small muted">PIN dimenticato? Scrivi all'amministratore, che lo azzera: rientrerai con il PIN iniziale e ne sceglierai uno nuovo.</p>`,
     async (f) => {
-      if (!navigator.onLine) throw new Error("Serve la connessione per accedere allo storico.");
+      if (!navigator.onLine) throw new Error("Serve la connessione per accedere con il PIN.");
       let r;
       try { r = await rpc("quiz_user_login", { p_code: S.user.code, p_name: S.user.name, p_pin: $("#upin", f).value.trim() }); }
       catch (e) { throw new Error(errMsg(e)); }
@@ -882,7 +895,7 @@ function pinLoginDialog(resolve) {
 // first = true: scelta obbligatoria dopo il PIN iniziale; se annulla, la sessione non viene tenuta.
 function choosePinDialog(token, resolve, first) {
   dialog(`<h2>${first ? "Scegli il tuo PIN personale" : "Cambia PIN"}</h2>
-    <p class="small muted">${first ? "Serve per salvare e vedere lo storico, anche da altri dispositivi. " : ""}Da 4 a 8 cifre, diverso dal PIN iniziale.</p>
+    <p class="small muted">${first ? "Lo userai per entrare nell'app, anche da altri dispositivi. " : ""}Da 4 a 8 cifre, diverso dal PIN iniziale.</p>
     ${pinField("np1", "Nuovo PIN", "new-password")}${pinField("np2", "Ripeti il nuovo PIN", "new-password")}`,
     async (f) => {
       const a = $("#np1", f).value.trim(), b = $("#np2", f).value.trim();
@@ -918,6 +931,32 @@ async function changePin() {
   await new Promise((r) => setTimeout(r)); // lascia chiudere la finestra del PIN attuale
   choosePinDialog(token, () => home(), false);
 }
+// Schermata obbligatoria finché su questo dispositivo non c'è un accesso con PIN.
+function pinGate() {
+  S.stack = [[pinGate, []]]; S.inProgress = false; setTitle("Quiz Master Trainer", false);
+  view.innerHTML = `<div class="card">
+    <h2>Accesso con PIN</h2>
+    <p>Ciao <b>${esc(S.user.name)}</b>. Per usare l'app serve il tuo PIN personale: lo inserisci una volta su questo dispositivo.</p>
+    <p class="small muted">Primo accesso? Usa il PIN iniziale ricevuto dall'amministratore, poi sceglierai il tuo.</p>
+    <button class="btn block big-btn" id="gpin" style="margin-top:12px">Inserisci il PIN</button>
+    <p class="small muted" style="margin-top:14px">Registriamo il tuo nome e la data dell'ultimo accesso, per sapere chi usa lo strumento di studio del corso. Nell'area amministratore non compaiono i tuoi risultati né i tuoi voti.</p>
+    <p class="small muted">Non sei ${esc(S.user.name)}? <a href="#" id="gout">Esci</a></p>
+  </div>`;
+  $("#gpin").onclick = async () => { if (await requireToken()) home(); };
+  $("#gout").onclick = (e) => { e.preventDefault(); S.user = null; store.del("user"); login(); };
+}
+// All'apertura (e al ritorno sull'app dopo un po'): aggiorna "ultimo accesso" sul server e verifica la sessione.
+// Usa una funzione esistente legata al PIN, che restituisce solo i risultati della persona stessa.
+function pingUser() {
+  if (!S.token || !navigator.onLine) return;
+  S.lastPing = Date.now();
+  rpc("quiz_result_list", { p_token: S.token }).catch((e) => {
+    if (!/sessione_non_valida|cambia_pin_prima|uuid/i.test(e.message)) return; // rete: si riprova alla prossima apertura
+    setToken(null);
+    if (!S.inProgress && S.stack[S.stack.length - 1]?.[0] === home) home(); // PIN azzerato dall'amministratore: chiede di nuovo il PIN
+  });
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - (S.lastPing || 0) > 30 * 60000) pingUser(); });
 async function leaveHistory() {
   const t = S.token; setToken(null);
   if (t) rpc("quiz_user_logout", { p_token: t }).catch(() => {});
@@ -1311,7 +1350,7 @@ function adminPanel(tab = "prop") {
   } else {
     ap.innerHTML = `<div class="card"><h2>Codice corso</h2><p class="small muted">Da comunicare ai corsisti. Cambiandolo, chi è già dentro dovrà reinserirlo.</p>
       <div class="row"><input type="text" id="cc" placeholder="Nuovo codice corso" style="flex:1"><button class="btn" id="scc">Salva</button></div></div>
-      <div class="card"><h2>PIN iniziale comune</h2><p class="small muted">Lo usano i corsisti al primo accesso allo storico e dopo un azzeramento; poi ognuno sceglie il suo. Chi ha già il PIN personale non cambia nulla.</p>
+      <div class="card"><h2>PIN iniziale comune</h2><p class="small muted">Lo usano i corsisti al primo accesso all'app e dopo un azzeramento; poi ognuno sceglie il suo. Chi ha già il PIN personale non cambia nulla.</p>
       <div class="row"><input type="password" id="dp" inputmode="numeric" maxlength="8" placeholder="Nuovo PIN iniziale (4-8 cifre)" style="flex:1"><button class="btn" id="sdp">Salva</button></div></div>
       <div class="card"><h2>PIN amministratore</h2><div class="row"><input type="password" id="np" placeholder="Nuovo PIN" style="flex:1"><button class="btn" id="snp">Salva</button></div></div>
       <div class="card"><button class="btn secondary block" id="lo">Esci dall'area amministratore</button></div>`;
@@ -1332,14 +1371,15 @@ async function adminUsers(ap) {
   catch (e) { ap.innerHTML = `<div class="card empty">${esc(errMsg(e))}</div>`; return; }
   if (!ap.isConnected) return;
   const when = (d) => (d ? new Date(d).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "mai");
-  ap.innerHTML = `<p class="small muted">Compaiono i corsisti che hanno attivato lo storico con il PIN. Il testo dei feedback è privato e non si vede qui.</p>
+  users.sort((a, b) => (Date.parse(b.last_seen) || 0) - (Date.parse(a.last_seen) || 0)); // il più recente in cima
+  ap.innerHTML = `<p class="small muted">Ultimo accesso = ultima apertura dell'app con connessione. Da questa versione il PIN è obbligatorio, quindi compaiono tutti i corsisti man mano che aggiornano l'app. Risultati e voti sono privati e non si vedono qui.</p>
     ${users.length ? users.map((u) => `<div class="card"><div class="row"><b style="color:var(--text)">${esc(u.name)}</b><span class="spacer"></span>
       ${u.locked ? '<span class="tag lock">bloccato</span>' : ""}${u.must_change ? '<span class="tag val">deve scegliere il PIN</span>' : ""}</div>
-      <div class="small muted" style="margin:6px 0">Ultimo accesso: ${when(u.last_seen)} · ${u.feedback_count} ${+u.feedback_count === 1 ? "prova" : "prove"} · voto medio ${fmtScore(u.avg_score == null ? null : +u.avg_score)}</div>
-      <div class="row end"><button class="btn secondary" data-reset="${esc(u.id)}" data-name="${esc(u.name)}">Azzera PIN</button></div></div>`).join("") : `<div class="card empty">Nessun corsista ha ancora attivato lo storico.</div>`}`;
+      <div class="small muted" style="margin:6px 0">Ultimo accesso: ${when(u.last_seen)}</div>
+      <div class="row end"><button class="btn secondary" data-reset="${esc(u.id)}" data-name="${esc(u.name)}">Azzera PIN</button></div></div>`).join("") : `<div class="card empty">Nessun corsista ha ancora fatto l'accesso con il PIN.</div>`}`;
   ap.onclick = async (e) => {
     const b = e.target.closest("[data-reset]"); if (!b) return;
-    if (!confirm(`Azzerare il PIN di ${b.dataset.name}? Rientrerà con il PIN iniziale comune e ne sceglierà uno nuovo. Il suo storico resta.`)) return;
+    if (!confirm(`Azzerare il PIN di ${b.dataset.name}? Rientrerà con il PIN iniziale comune e ne sceglierà uno nuovo. I suoi dati restano.`)) return;
     try { await rpc("quiz_admin_reset_user_pin", { p_pin: S.adminPin, p_user_id: b.dataset.reset }); toast(`PIN di ${b.dataset.name} azzerato`); adminUsers(ap); }
     catch (err) { toast(errMsg(err)); }
   };
@@ -1366,6 +1406,32 @@ function editQuestion(q, after, tabBack) {
 
 /* ---------- avvio ---------- */
 updateNet();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
-if (S.user && S.questions.length) { home(); if (navigator.onLine) loadQuestions(S.user.code).then(() => { if (S.stack.length <= 1) home(); }).catch((e) => { if (/codice_non_valido/.test(e.message)) login(); }); }
+// Aggiornamento automatico: quando il service worker di una nuova versione prende il controllo, la pagina si ricarica
+// (subito, o alla fine del quiz in corso).
+if ("serviceWorker" in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register("sw.js").then((reg) => {
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) reg.update().catch(() => {}); });
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || S.reloadPending) return; // primo avvio: niente da ricaricare
+    if (!S.inProgress && !$("#dlg").open) return location.reload();
+    // quiz in corso: si aggiorna al ritorno alla home, oppure subito con il pulsante
+    S.reloadPending = true;
+    const bar = document.createElement("div");
+    bar.className = "update-bar"; bar.setAttribute("role", "status");
+    bar.innerHTML = `<span>Nuova versione disponibile</span><button class="btn">Aggiorna ora</button>`;
+    bar.querySelector("button").onclick = () => { if (!S.inProgress || confirm("Aggiornare adesso? Il quiz in corso si interrompe (le risposte date restano nelle statistiche).")) location.reload(); };
+    document.body.appendChild(bar);
+  });
+}
+// Dopo un aggiornamento la home mostra una volta le novità (non al primo utilizzo in assoluto).
+{
+  const prev = store.get("version", null);
+  if (prev !== CFG.appVersion) { if (prev || S.user) S.updatedFrom = prev || "precedente"; store.set("version", CFG.appVersion); }
+}
+if (S.user && S.questions.length) {
+  home(); pingUser();
+  if (navigator.onLine) loadQuestions(S.user.code).then(() => { if (S.stack.length <= 1 && S.stack[0]?.[0] === home) home(); }).catch((e) => { if (/codice_non_valido/.test(e.message)) login(); });
+}
 else login();
