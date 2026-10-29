@@ -3,6 +3,7 @@
 const CFG = window.QUIZ_CONFIG;
 // Novità mostrate una volta in home dopo l'aggiornamento: aggiungere qui una voce per ogni nuova versione.
 const NOVITA = {
+  "1.5.2": ["🎙️ Quiz a voce: dopo ogni risposta, giusta o sbagliata, l'app legge la risposta esatta e la spiegazione."],
   "1.5.0": [
     "Si entra con il PIN personale: protegge i tuoi risultati, nessuno può usare il tuo nome.",
     "L'app si aggiorna da sola quando la apri.",
@@ -618,7 +619,7 @@ function voiceQuizStart(st) {
     ${!hasTTS() ? `<p class="vnote">La lettura vocale non è disponibile su questo browser: leggi le domande sullo schermo${SpeechRec ? " e rispondi a voce o toccando" : ""}.</p>` : ""}
     <h3>Velocità lettura</h3>${chips("vrate", VOICE_RATES, P.rate)}
     <h3>Leggi le risposte</h3>${chips("vopts", [["Sì", "1"], ["No", ""]], P.readOpts ? "1" : "")}
-    ${exam ? "" : `<h3>Dopo un errore leggi la spiegazione</h3>${chips("vexpl", [["Sì", "1"], ["No", ""]], P.readExpl ? "1" : "")}`}
+    ${exam ? "" : `<h3>Dopo la risposta leggi la spiegazione</h3>${chips("vexpl", [["Sì", "1"], ["No", ""]], P.readExpl ? "1" : "")}`}
     <button class="btn block big-btn" id="vstart" style="margin-top:16px">▶ Inizia ${exam ? "simulazione" : "quiz"} a voce</button>
   </div>`;
   const bind = (id, key, conv) => {
@@ -776,11 +777,12 @@ function voiceQuiz(st) {
     readFeedback();
   }
   function feedbackText() {
-    const { q: lq, v: lv, i, ok } = last, right = `la ${NUM_WORDS[lv.answer]}: ${lv.options[lv.answer]}`;
+    const { q: lq, v: lv, i, ok } = last;
     if (exam) return { title: i == null ? "Domanda saltata." : "Risposta registrata.", speak: [i == null ? "Domanda saltata." : "Risposta registrata."] };
-    if (ok) return { title: "✅ Esatto!", speak: ["Esatto!"] };
-    const head = i == null ? `Domanda saltata. La risposta giusta è ${right}.` : `Sbagliato. La risposta giusta è ${right}.`;
-    return { title: (i == null ? "⏭ " : "❌ ") + head, speak: [head, ...(P.readExpl && lq.explanation ? [lq.explanation] : [])] };
+    // giusta, sbagliata o saltata: sempre esito, poi risposta esatta, poi (se c'è e se attivo) la spiegazione
+    const esito = ok ? "Esatto!" : i == null ? "Domanda saltata." : "Sbagliato.";
+    const right = `La risposta esatta è la numero ${NUM_WORDS[lv.answer]}: ${lv.options[lv.answer]}.`;
+    return { title: `${ok ? "✅" : i == null ? "⏭" : "❌"} ${esito} ${right}`, speak: [esito, right, ...(P.readExpl && lq.explanation ? [lq.explanation] : [])] };
   }
   function showFeedback() {
     const { q: lq, v: lv, i, ok } = last, f = feedbackText();

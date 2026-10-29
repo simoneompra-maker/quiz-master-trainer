@@ -1,5 +1,5 @@
 // Cache dell'app per l'uso offline. Le domande sono salvate dall'app nel dispositivo (localStorage).
-const CACHE = "mt-quiz-v1.5.0";
+const CACHE = "mt-quiz-v1.5.2";
 const ASSETS = ["./", "index.html", "styles.css", "app.js", "config.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS.map((a) => new Request(a, { cache: "reload" }))))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {
